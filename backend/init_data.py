@@ -89,33 +89,33 @@ def init_sample_validations():
 
     now = datetime.now()
 
-    # 1. MATCHED - ICICI Bank FX Spot (INR)
+    # 1. MATCHED - Goldman Sachs FX Spot (USD)
     matched_fx_spot = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
         system_trade_id="40847291056",
         status="MATCH",
-        counterparty="ICICI Bank",
+        counterparty="Goldman Sachs",
         product="FX Spot",
-        notional=75000000,
-        currency="INR",
+        notional=5000000,
+        currency="USD",
         trade_date="2025-01-06",
         confidence=0.96,
         created_at=(now - timedelta(hours=1)).isoformat(),
         field_comparisons=[
-            FieldComparison(field_name="counterparty", extracted_value="ICICI Bank Ltd", system_value="ICICI Bank", match_status="WITHIN_TOLERANCE", confidence=0.92, rule_applied="fuzzy"),
-            FieldComparison(field_name="currency_pair", extracted_value="USD/INR", system_value="USD/INR", match_status="MATCH", confidence=0.99, rule_applied="exact"),
+            FieldComparison(field_name="counterparty", extracted_value="Goldman Sachs & Co", system_value="Goldman Sachs", match_status="WITHIN_TOLERANCE", confidence=0.92, rule_applied="fuzzy"),
+            FieldComparison(field_name="currency_pair", extracted_value="EUR/USD", system_value="EUR/USD", match_status="MATCH", confidence=0.99, rule_applied="exact"),
             FieldComparison(field_name="direction", extracted_value="BUY", system_value="BUY", match_status="MATCH", confidence=0.98, rule_applied="exact"),
-            FieldComparison(field_name="notional", extracted_value=75000000, system_value=75000000, match_status="MATCH", confidence=0.97, rule_applied="tolerance_0.01percent"),
-            FieldComparison(field_name="rate", extracted_value=83.42, system_value=83.42, match_status="MATCH", confidence=0.99, rule_applied="tolerance_0.0001absolute"),
+            FieldComparison(field_name="notional", extracted_value=5000000, system_value=5000000, match_status="MATCH", confidence=0.97, rule_applied="tolerance_0.01percent"),
+            FieldComparison(field_name="rate", extracted_value=1.0842, system_value=1.0842, match_status="MATCH", confidence=0.99, rule_applied="tolerance_0.0001absolute"),
             FieldComparison(field_name="trade_date", extracted_value="2025-01-06", system_value="2025-01-06", match_status="MATCH", confidence=0.95, rule_applied="date_tolerance_0days"),
             FieldComparison(field_name="value_date", extracted_value="2025-01-08", system_value="2025-01-08", match_status="MATCH", confidence=0.94, rule_applied="date_tolerance_1days"),
         ]
     )
     db.create_validation_result(matched_fx_spot)
-    print("Created validation: Matched FX Spot (ICICI Bank)")
+    print("Created validation: Matched FX Spot (Goldman Sachs)")
 
-    # 2. MATCHED - HDFC Bank IRS
+    # 2. MATCHED - HDFC Bank IRS (INR)
     matched_irs = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
@@ -144,33 +144,33 @@ def init_sample_validations():
     db.create_validation_result(matched_irs)
     print("Created validation: Matched IRS (HDFC Bank)")
 
-    # 3. PARTIAL MATCH - Axis Bank FX NDF with rate discrepancy
+    # 3. PARTIAL MATCH - JP Morgan FX NDF with rate discrepancy (USD)
     partial_ndf = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
         system_trade_id="40738291054",
         status="PARTIAL",
-        counterparty="Axis Bank",
+        counterparty="JP Morgan",
         product="FX NDF",
-        notional=100000000,
-        currency="INR",
+        notional=10000000,
+        currency="USD",
         trade_date="2025-01-02",
         maturity_date="2025-04-02",
         confidence=0.79,
         created_at=(now - timedelta(hours=6)).isoformat(),
         field_comparisons=[
-            FieldComparison(field_name="counterparty", extracted_value="Axis Bank Ltd.", system_value="Axis Bank", match_status="WITHIN_TOLERANCE", confidence=0.88, rule_applied="fuzzy"),
+            FieldComparison(field_name="counterparty", extracted_value="JP Morgan Chase", system_value="JP Morgan", match_status="WITHIN_TOLERANCE", confidence=0.88, rule_applied="fuzzy"),
             FieldComparison(field_name="currency_pair", extracted_value="USD/INR", system_value="USD/INR", match_status="MATCH", confidence=0.99, rule_applied="exact"),
-            FieldComparison(field_name="notional", extracted_value=100000000, system_value=100000000, match_status="MATCH", confidence=0.95, rule_applied="tolerance_0.01percent"),
+            FieldComparison(field_name="notional", extracted_value=10000000, system_value=10000000, match_status="MATCH", confidence=0.95, rule_applied="tolerance_0.01percent"),
             FieldComparison(field_name="rate", extracted_value=84.15, system_value=84.05, match_status="MISMATCH", confidence=0.72, rule_applied="tolerance_0.0001absolute"),
             FieldComparison(field_name="trade_date", extracted_value="2025-01-02", system_value="2025-01-02", match_status="MATCH", confidence=0.94, rule_applied="date_tolerance_0days"),
             FieldComparison(field_name="maturity_date", extracted_value="2025-04-02", system_value="2025-04-02", match_status="MATCH", confidence=0.91, rule_applied="date_tolerance_0days"),
         ]
     )
     db.create_validation_result(partial_ndf)
-    print("Created validation: Partial Match FX NDF (Axis Bank)")
+    print("Created validation: Partial Match FX NDF (JP Morgan)")
 
-    # 4. MATCHED - SBI FX Swap
+    # 4. MATCHED - State Bank of India FX Swap (INR)
     matched_fx_swap = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
@@ -199,16 +199,16 @@ def init_sample_validations():
     db.create_validation_result(matched_fx_swap)
     print("Created validation: Matched FX Swap (SBI)")
 
-    # 5. NOT MATCHED - Kotak Mahindra Bank (no matching trade found)
+    # 5. NOT MATCHED - Deutsche Bank CCS (no matching trade found) (EUR)
     not_matched = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
         system_trade_id="NOT_FOUND",
         status="MISMATCH",
-        counterparty="Kotak Mahindra Bank",
+        counterparty="Deutsche Bank",
         product="CCS",
-        notional=200000000,
-        currency="INR",
+        notional=15000000,
+        currency="EUR",
         trade_date="2025-01-04",
         effective_date="2025-01-15",
         maturity_date="2028-01-15",
@@ -217,88 +217,88 @@ def init_sample_validations():
         field_comparisons=[]
     )
     db.create_validation_result(not_matched)
-    print("Created validation: Not Matched CCS (Kotak Mahindra)")
+    print("Created validation: Not Matched CCS (Deutsche Bank)")
 
-    # 6. PARTIAL MATCH - Bank of Baroda IRS with date discrepancy
+    # 6. PARTIAL MATCH - Citibank IRS with date discrepancy (USD)
     partial_irs = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
         system_trade_id="40629481735",
         status="PARTIAL",
-        counterparty="Bank of Baroda",
+        counterparty="Citibank",
         product="IRS",
-        notional=300000000,
-        currency="INR",
+        notional=25000000,
+        currency="USD",
         trade_date="2024-12-30",
         effective_date="2025-01-06",
         maturity_date="2027-01-06",
         confidence=0.81,
         created_at=(now - timedelta(days=1, hours=5)).isoformat(),
         field_comparisons=[
-            FieldComparison(field_name="counterparty", extracted_value="Bank of Baroda", system_value="Bank of Baroda", match_status="MATCH", confidence=0.97, rule_applied="fuzzy"),
+            FieldComparison(field_name="counterparty", extracted_value="Citibank N.A.", system_value="Citibank", match_status="WITHIN_TOLERANCE", confidence=0.89, rule_applied="fuzzy"),
             FieldComparison(field_name="trade_type", extracted_value="IRS", system_value="IRS", match_status="MATCH", confidence=0.98, rule_applied="exact"),
-            FieldComparison(field_name="notional", extracted_value=300000000, system_value=300000000, match_status="MATCH", confidence=0.95, rule_applied="tolerance_0.01percent"),
-            FieldComparison(field_name="currency", extracted_value="INR", system_value="INR", match_status="MATCH", confidence=0.99, rule_applied="exact"),
-            FieldComparison(field_name="fixed_rate", extracted_value=7.10, system_value=7.10, match_status="MATCH", confidence=0.96, rule_applied="tolerance_0.01absolute"),
-            FieldComparison(field_name="floating_index", extracted_value="MIBOR", system_value="MIBOR", match_status="MATCH", confidence=0.98, rule_applied="exact"),
+            FieldComparison(field_name="notional", extracted_value=25000000, system_value=25000000, match_status="MATCH", confidence=0.95, rule_applied="tolerance_0.01percent"),
+            FieldComparison(field_name="currency", extracted_value="USD", system_value="USD", match_status="MATCH", confidence=0.99, rule_applied="exact"),
+            FieldComparison(field_name="fixed_rate", extracted_value=4.35, system_value=4.35, match_status="MATCH", confidence=0.96, rule_applied="tolerance_0.01absolute"),
+            FieldComparison(field_name="floating_index", extracted_value="SOFR", system_value="SOFR", match_status="MATCH", confidence=0.98, rule_applied="exact"),
             FieldComparison(field_name="effective_date", extracted_value="2025-01-07", system_value="2025-01-06", match_status="WITHIN_TOLERANCE", confidence=0.78, rule_applied="date_tolerance_1days"),
             FieldComparison(field_name="maturity_date", extracted_value="2027-01-06", system_value="2027-01-06", match_status="MATCH", confidence=0.92, rule_applied="date_tolerance_0days"),
         ]
     )
     db.create_validation_result(partial_irs)
-    print("Created validation: Partial Match IRS (Bank of Baroda)")
+    print("Created validation: Partial Match IRS (Citibank)")
 
-    # 7. MATCHED - Punjab National Bank Commodity
+    # 7. MATCHED - Barclays Commodity (USD)
     matched_commodity = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
         system_trade_id="40582947163",
         status="MATCH",
-        counterparty="Punjab National Bank",
+        counterparty="Barclays",
         product="Commodity",
-        notional=50000000,
-        currency="INR",
+        notional=8000000,
+        currency="USD",
         trade_date="2025-01-02",
         maturity_date="2025-03-31",
         confidence=0.93,
         created_at=(now - timedelta(days=2)).isoformat(),
         field_comparisons=[
-            FieldComparison(field_name="counterparty", extracted_value="Punjab National Bank", system_value="Punjab National Bank", match_status="MATCH", confidence=0.97, rule_applied="fuzzy"),
-            FieldComparison(field_name="commodity", extracted_value="Gold", system_value="Gold", match_status="MATCH", confidence=0.99, rule_applied="exact"),
-            FieldComparison(field_name="notional", extracted_value=50000000, system_value=50000000, match_status="MATCH", confidence=0.95, rule_applied="tolerance_0.01percent"),
-            FieldComparison(field_name="price", extracted_value=62500, system_value=62500, match_status="MATCH", confidence=0.96, rule_applied="tolerance_0.01absolute"),
+            FieldComparison(field_name="counterparty", extracted_value="Barclays Bank PLC", system_value="Barclays", match_status="WITHIN_TOLERANCE", confidence=0.91, rule_applied="fuzzy"),
+            FieldComparison(field_name="commodity", extracted_value="Crude Oil", system_value="Crude Oil", match_status="MATCH", confidence=0.99, rule_applied="exact"),
+            FieldComparison(field_name="notional", extracted_value=8000000, system_value=8000000, match_status="MATCH", confidence=0.95, rule_applied="tolerance_0.01percent"),
+            FieldComparison(field_name="price", extracted_value=72.50, system_value=72.50, match_status="MATCH", confidence=0.96, rule_applied="tolerance_0.01absolute"),
             FieldComparison(field_name="trade_date", extracted_value="2025-01-02", system_value="2025-01-02", match_status="MATCH", confidence=0.94, rule_applied="date_tolerance_0days"),
             FieldComparison(field_name="maturity_date", extracted_value="2025-03-31", system_value="2025-03-31", match_status="MATCH", confidence=0.91, rule_applied="date_tolerance_0days"),
         ]
     )
     db.create_validation_result(matched_commodity)
-    print("Created validation: Matched Commodity (PNB)")
+    print("Created validation: Matched Commodity (Barclays)")
 
-    # 8. MATCHED - IndusInd Bank FX Spot
+    # 8. MATCHED - ICICI Bank FX Spot (INR)
     matched_fx_spot_2 = ValidationResult(
         id=generate_id(),
         document_id=generate_id(),
         system_trade_id="40918273645",
         status="MATCH",
-        counterparty="IndusInd Bank",
+        counterparty="ICICI Bank",
         product="FX Spot",
-        notional=125000000,
+        notional=75000000,
         currency="INR",
         trade_date="2025-01-06",
         confidence=0.97,
         created_at=(now - timedelta(hours=2)).isoformat(),
         field_comparisons=[
-            FieldComparison(field_name="counterparty", extracted_value="IndusInd Bank", system_value="IndusInd Bank", match_status="MATCH", confidence=0.99, rule_applied="fuzzy"),
-            FieldComparison(field_name="currency_pair", extracted_value="EUR/INR", system_value="EUR/INR", match_status="MATCH", confidence=0.98, rule_applied="exact"),
+            FieldComparison(field_name="counterparty", extracted_value="ICICI Bank Ltd", system_value="ICICI Bank", match_status="WITHIN_TOLERANCE", confidence=0.93, rule_applied="fuzzy"),
+            FieldComparison(field_name="currency_pair", extracted_value="USD/INR", system_value="USD/INR", match_status="MATCH", confidence=0.98, rule_applied="exact"),
             FieldComparison(field_name="direction", extracted_value="SELL", system_value="SELL", match_status="MATCH", confidence=0.97, rule_applied="exact"),
-            FieldComparison(field_name="notional", extracted_value=125000000, system_value=125000000, match_status="MATCH", confidence=0.96, rule_applied="tolerance_0.01percent"),
-            FieldComparison(field_name="rate", extracted_value=90.25, system_value=90.25, match_status="MATCH", confidence=0.98, rule_applied="tolerance_0.0001absolute"),
+            FieldComparison(field_name="notional", extracted_value=75000000, system_value=75000000, match_status="MATCH", confidence=0.96, rule_applied="tolerance_0.01percent"),
+            FieldComparison(field_name="rate", extracted_value=83.42, system_value=83.42, match_status="MATCH", confidence=0.98, rule_applied="tolerance_0.0001absolute"),
             FieldComparison(field_name="trade_date", extracted_value="2025-01-06", system_value="2025-01-06", match_status="MATCH", confidence=0.95, rule_applied="date_tolerance_0days"),
             FieldComparison(field_name="value_date", extracted_value="2025-01-08", system_value="2025-01-08", match_status="MATCH", confidence=0.94, rule_applied="date_tolerance_1days"),
         ]
     )
     db.create_validation_result(matched_fx_spot_2)
-    print("Created validation: Matched FX Spot (IndusInd Bank)")
+    print("Created validation: Matched FX Spot (ICICI Bank)")
 
 
 if __name__ == "__main__":
