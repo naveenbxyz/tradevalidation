@@ -82,3 +82,34 @@ export interface Document {
   extracted_data?: ExtractedTrade;
   validation_result?: ValidationResult;
 }
+
+export interface OCRWord {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: number;
+}
+
+export interface FieldCoordinate {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  matched_text: string;
+  confidence: number;
+  field_value: string;
+}
+
+export interface DocumentViewerData {
+  document_id: string;
+  filename: string;
+  page: number;
+  image_base64: string;
+  image_width: number;
+  image_height: number;
+  ocr_words: OCRWord[];
+  field_coordinates: Record<string, FieldCoordinate>;
+  extracted_data?: ExtractedTrade;
+}

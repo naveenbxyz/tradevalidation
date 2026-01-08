@@ -220,6 +220,62 @@ async def extract_document(doc_id: str):
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
+@router.get("/documents/{doc_id}/viewer")
+async def get_document_viewer_data(doc_id: str, page: int = 0):
+    """
+    Get document image with OCR bounding boxes for the document viewer.
+    Returns the document as a base64 image with field coordinates highlighted.
+    """
+    from app.services import vision_ocr
+
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Only works for PDFs and images with file paths
+    if not doc.file_path:
+        raise HTTPException(status_code=400, detail="Document has no file for viewing")
+
+    if doc.file_type == "text":
+        raise HTTPException(status_code=400, detail="Text documents cannot be viewed as images")
+
+    try:
+        # Process document with Vision OCR
+        ocr_result = vision_ocr.process_document(doc.file_path, page_num=page)
+
+        # Get field coordinates if document has been extracted
+        field_coordinates = {}
+        if doc.extracted_data and doc.extracted_data.get("fields"):
+            field_coordinates = vision_ocr.get_field_coordinates(
+                doc.extracted_data["fields"],
+                ocr_result.words
+            )
+
+        return {
+            "document_id": doc_id,
+            "filename": doc.filename,
+            "page": page,
+            "image_base64": ocr_result.image_base64,
+            "image_width": ocr_result.image_width,
+            "image_height": ocr_result.image_height,
+            "ocr_words": [
+                {
+                    "text": w.text,
+                    "x": w.x,
+                    "y": w.y,
+                    "width": w.width,
+                    "height": w.height,
+                    "confidence": w.confidence
+                }
+                for w in ocr_result.words
+            ],
+            "field_coordinates": field_coordinates,
+            "extracted_data": doc.extracted_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+
+
 @router.post("/documents/{doc_id}/validate", response_model=Document)
 async def validate_document(doc_id: str):
     """Validate extracted document data against system records."""

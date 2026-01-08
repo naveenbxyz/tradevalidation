@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
-import { Upload, FileText, Image, File, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Upload, FileText, Image, File, Loader2, CheckCircle, XCircle, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { DocumentViewer } from '@/components/DocumentViewer';
 import type { Document, ExtractedTrade } from '@/types/trade';
 
 const API_BASE = 'http://localhost:8000';
@@ -14,6 +15,7 @@ export function DocumentUpload() {
   const [textInput, setTextInput] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [viewingDocumentId, setViewingDocumentId] = useState<string | null>(null);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -256,6 +258,16 @@ Value Date: 2024-01-17"
                   </div>
                   <div className="flex items-center space-x-4">
                     {getStatusBadge(doc.status)}
+                    {doc.file_type !== 'text' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setViewingDocumentId(doc.id)}
+                      >
+                        <Eye className="h-4 w-4 mr-1" />
+                        View
+                      </Button>
+                    )}
                     {doc.status === 'PENDING' && (
                       <Button size="sm" onClick={() => processDocument(doc.id)}>
                         Extract
@@ -299,6 +311,13 @@ Value Date: 2024-01-17"
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {viewingDocumentId && (
+        <DocumentViewer
+          documentId={viewingDocumentId}
+          onClose={() => setViewingDocumentId(null)}
+        />
       )}
     </div>
   );
