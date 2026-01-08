@@ -91,11 +91,13 @@ class ValidationResult(BaseModel):
     field_comparisons: List[FieldComparison] = []
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     # Enriched fields for dashboard display
-    document_name: Optional[str] = None
     counterparty: Optional[str] = None
-    trade_type: Optional[str] = None
+    product: Optional[str] = None  # FX Spot, FX Swap, FX NDF, IRS, CCS, Commodity
     notional: Optional[float] = None
     currency: Optional[str] = None
+    trade_date: Optional[str] = None
+    effective_date: Optional[str] = None
+    maturity_date: Optional[str] = None
     confidence: Optional[float] = None
 
 

@@ -2,6 +2,7 @@ import os
 import aiofiles
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from pydantic import BaseModel
 from app.models import (
     FXTrade, FXTradeCreate,
     SwapTrade, SwapTradeCreate,
@@ -15,6 +16,166 @@ from app.config import settings
 from datetime import datetime
 
 router = APIRouter()
+
+
+# ============== Chat ==============
+
+class ChatRequest(BaseModel):
+    message: str
+    context: list = []
+
+
+class ChatResponse(BaseModel):
+    response: str
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_with_context(request: ChatRequest):
+    """
+    Chat endpoint that answers questions about validation results.
+    Uses the validation context to provide accurate responses.
+    """
+    from openai import OpenAI
+    from app.config import settings
+
+    # Build context string from validation results
+    context_summary = build_context_summary(request.context)
+
+    system_prompt = f"""You are a helpful assistant for a trade validation system. You help users understand their trade validation results.
+
+Here is the current validation data context:
+{context_summary}
+
+Answer questions based ONLY on this context. Be concise but informative. Format numbers with commas for readability.
+If asked about something not in the context, politely explain that you can only answer questions about the current validation data.
+Use bullet points for lists. Keep responses under 200 words unless more detail is specifically requested."""
+
+    try:
+        client = OpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url if settings.openai_base_url else None
+        )
+
+        response = client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.message}
+            ],
+            max_tokens=500,
+            temperature=0.3
+        )
+
+        return ChatResponse(response=response.choices[0].message.content)
+    except Exception as e:
+        # Fallback to simple pattern matching if LLM is not available
+        return ChatResponse(response=generate_fallback_response(request.message, request.context))
+
+
+def build_context_summary(validations: list) -> str:
+    """Build a summary of validation results for LLM context."""
+    if not validations:
+        return "No validation results available."
+
+    # Calculate statistics
+    total = len(validations)
+    matched = sum(1 for v in validations if v.get('status') == 'MATCH')
+    partial = sum(1 for v in validations if v.get('status') == 'PARTIAL')
+    not_matched = sum(1 for v in validations if v.get('status') == 'MISMATCH')
+
+    # Group by product
+    products = {}
+    counterparties = {}
+    total_notional = 0
+
+    for v in validations:
+        product = v.get('product', 'Unknown')
+        products[product] = products.get(product, 0) + 1
+
+        cp = v.get('counterparty', 'Unknown')
+        counterparties[cp] = counterparties.get(cp, 0) + 1
+
+        notional = v.get('notional', 0) or 0
+        total_notional += notional
+
+    # Build detailed list
+    trade_details = []
+    for v in validations:
+        detail = f"- {v.get('counterparty', 'Unknown')}: {v.get('product', 'Unknown')}, "
+        detail += f"Notional: {v.get('currency', 'INR')} {v.get('notional', 0):,.0f}, "
+        detail += f"Trade Date: {v.get('trade_date', 'N/A')}, "
+        detail += f"Status: {v.get('status', 'Unknown')}, "
+        detail += f"Trade ID: {v.get('system_trade_id', 'N/A')}, "
+        detail += f"Confidence: {(v.get('confidence', 0) * 100):.0f}%"
+        trade_details.append(detail)
+
+    summary = f"""
+VALIDATION SUMMARY:
+- Total validations: {total}
+- Matched: {matched}
+- Partial Match: {partial}
+- Not Matched: {not_matched}
+- Total Notional: INR {total_notional:,.0f}
+
+BY PRODUCT:
+{chr(10).join(f'- {k}: {v} trades' for k, v in products.items())}
+
+BY COUNTERPARTY:
+{chr(10).join(f'- {k}: {v} trades' for k, v in counterparties.items())}
+
+INDIVIDUAL TRADES:
+{chr(10).join(trade_details)}
+"""
+    return summary
+
+
+def generate_fallback_response(message: str, validations: list) -> str:
+    """Generate response without LLM using simple pattern matching."""
+    message_lower = message.lower()
+
+    total = len(validations)
+    matched = sum(1 for v in validations if v.get('status') == 'MATCH')
+    partial = sum(1 for v in validations if v.get('status') == 'PARTIAL')
+    not_matched = sum(1 for v in validations if v.get('status') == 'MISMATCH')
+
+    if 'how many' in message_lower and 'match' in message_lower:
+        return f"Out of {total} validations:\n- {matched} are fully matched\n- {partial} are partial matches\n- {not_matched} are not matched"
+
+    if 'mismatch' in message_lower or 'not match' in message_lower:
+        mismatches = [v for v in validations if v.get('status') in ['MISMATCH', 'PARTIAL']]
+        if not mismatches:
+            return "Great news! There are no mismatched trades."
+        lines = ["Trades with issues:"]
+        for m in mismatches:
+            lines.append(f"- {m.get('counterparty')}: {m.get('product')} - {m.get('status')}")
+        return "\n".join(lines)
+
+    if 'total' in message_lower and 'notional' in message_lower:
+        total_notional = sum(v.get('notional', 0) or 0 for v in validations)
+        return f"Total notional across all validations: INR {total_notional:,.0f}"
+
+    if 'counterpart' in message_lower:
+        counterparties = {}
+        for v in validations:
+            cp = v.get('counterparty', 'Unknown')
+            counterparties[cp] = counterparties.get(cp, 0) + 1
+        sorted_cps = sorted(counterparties.items(), key=lambda x: x[1], reverse=True)
+        lines = ["Counterparties by number of trades:"]
+        for cp, count in sorted_cps:
+            lines.append(f"- {cp}: {count} trade(s)")
+        return "\n".join(lines)
+
+    if 'product' in message_lower or 'irs' in message_lower or 'fx' in message_lower:
+        products = {}
+        for v in validations:
+            product = v.get('product', 'Unknown')
+            products[product] = products.get(product, 0) + 1
+        lines = ["Trades by product type:"]
+        for product, count in products.items():
+            lines.append(f"- {product}: {count} trade(s)")
+        return "\n".join(lines)
+
+    return f"I have {total} validation results loaded. You can ask me about:\n- Match statistics\n- Trades with mismatches\n- Total notional\n- Counterparties\n- Product types"
 
 
 # ============== FX Trades ==============

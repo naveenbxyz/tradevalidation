@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { ChatBubble } from '@/components/ChatBubble';
 import type { ValidationResult, FieldComparison } from '@/types/trade';
 
 const API_BASE = 'http://localhost:8000';
@@ -76,13 +77,31 @@ export function ValidationDashboard() {
     }
   };
 
+  const getProductBadgeColor = (product?: string) => {
+    if (!product) return 'bg-gray-100 text-gray-800';
+    if (product.startsWith('FX')) return 'bg-blue-100 text-blue-800';
+    if (product === 'IRS') return 'bg-purple-100 text-purple-800';
+    if (product === 'CCS') return 'bg-indigo-100 text-indigo-800';
+    if (product === 'Commodity') return 'bg-amber-100 text-amber-800';
+    return 'bg-gray-100 text-gray-800';
+  };
+
   const formatNotional = (notional?: number, currency?: string) => {
     if (!notional) return '-';
-    const formatted = new Intl.NumberFormat('en-US', {
+    const formatted = new Intl.NumberFormat('en-IN', {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     }).format(notional);
     return currency ? `${currency} ${formatted}` : formatted;
+  };
+
+  const formatDate = (dateStr?: string) => {
+    if (!dateStr) return '-';
+    return new Date(dateStr).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
   };
 
   const getConfidenceColor = (confidence?: number) => {
@@ -182,12 +201,12 @@ export function ValidationDashboard() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[130px]">Status</TableHead>
-                <TableHead>Document</TableHead>
                 <TableHead>Counterparty</TableHead>
-                <TableHead>Trade Type</TableHead>
+                <TableHead>Product</TableHead>
+                <TableHead>Trade Date</TableHead>
                 <TableHead className="text-right">Notional</TableHead>
-                <TableHead>Matched Trade ID</TableHead>
-                <TableHead>Date</TableHead>
+                <TableHead>Eff/Mat Date</TableHead>
+                <TableHead>Trade ID</TableHead>
                 <TableHead className="text-right">Confidence</TableHead>
                 <TableHead className="w-[80px]">Actions</TableHead>
               </TableRow>
@@ -206,28 +225,28 @@ export function ValidationDashboard() {
                       </div>
                     </TableCell>
                     <TableCell className="font-medium">
-                      {result.document_name || `Doc-${result.document_id.slice(0, 8)}`}
-                    </TableCell>
-                    <TableCell>
                       {result.counterparty || '-'}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {result.trade_type || 'FX'}
-                      </Badge>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getProductBadgeColor(result.product)}`}>
+                        {result.product || '-'}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatDate(result.trade_date)}
                     </TableCell>
                     <TableCell className="text-right font-mono">
                       {formatNotional(result.notional, result.currency)}
                     </TableCell>
-                    <TableCell className="font-mono">
+                    <TableCell className="text-muted-foreground text-sm">
+                      {result.effective_date ? formatDate(result.effective_date) : formatDate(result.maturity_date)}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">
                       {isNotMatched ? (
                         <span className="text-muted-foreground italic">-</span>
                       ) : (
                         result.system_trade_id
                       )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {new Date(result.created_at).toLocaleDateString()}
                     </TableCell>
                     <TableCell className={`text-right font-medium ${getConfidenceColor(confidence)}`}>
                       {(confidence * 100).toFixed(0)}%
@@ -268,12 +287,12 @@ export function ValidationDashboard() {
               {selectedResult && (
                 <div className="mt-2 space-y-1">
                   <div className="flex justify-between">
-                    <span>Document:</span>
-                    <span className="font-medium">{selectedResult.document_name || `Doc-${selectedResult.document_id.slice(0, 8)}`}</span>
-                  </div>
-                  <div className="flex justify-between">
                     <span>Counterparty:</span>
                     <span className="font-medium">{selectedResult.counterparty || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Product:</span>
+                    <span className="font-medium">{selectedResult.product || '-'}</span>
                   </div>
                   {selectedResult.status !== 'MISMATCH' && selectedResult.system_trade_id !== 'NOT_FOUND' && (
                     <div className="flex justify-between">
@@ -339,6 +358,9 @@ export function ValidationDashboard() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Chat Bubble */}
+      <ChatBubble validationResults={results} />
     </div>
   );
 }

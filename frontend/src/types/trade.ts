@@ -48,6 +48,8 @@ export interface MatchingRule {
   enabled: boolean;
 }
 
+export type ProductType = 'FX Spot' | 'FX Swap' | 'FX NDF' | 'IRS' | 'CCS' | 'Commodity';
+
 export interface ValidationResult {
   id: string;
   document_id: string;
@@ -56,11 +58,13 @@ export interface ValidationResult {
   field_comparisons: FieldComparison[];
   created_at: string;
   // Enriched fields for dashboard display
-  document_name?: string;
   counterparty?: string;
-  trade_type?: TradeType | 'IRS' | 'CCS' | 'BASIS';
+  product?: ProductType;
   notional?: number;
   currency?: string;
+  trade_date?: string;
+  effective_date?: string;
+  maturity_date?: string;
   confidence?: number;
 }
 
