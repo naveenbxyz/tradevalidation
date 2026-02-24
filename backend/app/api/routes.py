@@ -1,24 +1,36 @@
+import csv
+import io
 import os
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List
+
 import aiofiles
-from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
+
+from app.config import settings
+from app.db import db
 from app.models import (
-    FXTrade, FXTradeCreate,
-    SwapTrade, SwapTradeCreate,
-    Document, MatchingRule, ValidationResult,
-    TextInput, TradeImport
+    CheckerActionRequest,
+    Document,
+    FolderScanRequest,
+    MatchingRule,
+    TRSTrade,
+    TRSTradeCreate,
+    TextInput,
+    TradeImport,
+    ValidationResult,
 )
 from app.models.schemas import generate_id
-from app.db import db
-from app.services import extractor, comparison_engine
-from app.config import settings
-from datetime import datetime
+from app.services import comparison_engine, evidence_processor, extractor
 
 router = APIRouter()
 
 
 # ============== Chat ==============
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -31,293 +43,225 @@ class ChatResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_context(request: ChatRequest):
-    """
-    Chat endpoint that answers questions about validation results.
-    Uses the validation context to provide accurate responses.
-    """
+    """Chat endpoint that answers questions about validation results."""
     from openai import OpenAI
-    from app.config import settings
 
-    # Build context string from validation results
     context_summary = build_context_summary(request.context)
 
-    system_prompt = f"""You are a helpful assistant for a trade validation system. You help users understand their trade validation results.
+    system_prompt = f"""You are an assistant for a TRS trade validation system.
 
-Here is the current validation data context:
+Use only the validation context below:
 {context_summary}
 
-Answer questions based ONLY on this context. Be concise but informative. Format numbers with commas for readability.
-If asked about something not in the context, politely explain that you can only answer questions about the current validation data.
-Use bullet points for lists. Keep responses under 200 words unless more detail is specifically requested."""
+Keep responses concise and factual.
+If information is missing in context, say so clearly."""
 
     try:
         client = OpenAI(
             api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url if settings.openai_base_url else None
+            base_url=settings.openai_base_url if settings.openai_base_url else None,
         )
 
         response = client.chat.completions.create(
             model=settings.llm_model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": request.message}
+                {"role": "user", "content": request.message},
             ],
             max_tokens=500,
-            temperature=0.3
+            temperature=0.2,
         )
 
         return ChatResponse(response=response.choices[0].message.content)
-    except Exception as e:
-        # Fallback to simple pattern matching if LLM is not available
+    except Exception:
         return ChatResponse(response=generate_fallback_response(request.message, request.context))
 
 
 def build_context_summary(validations: list) -> str:
-    """Build a summary of validation results for LLM context."""
     if not validations:
         return "No validation results available."
 
-    # Calculate statistics
     total = len(validations)
-    matched = sum(1 for v in validations if v.get('status') == 'MATCH')
-    partial = sum(1 for v in validations if v.get('status') == 'PARTIAL')
-    not_matched = sum(1 for v in validations if v.get('status') == 'MISMATCH')
+    matched = sum(1 for v in validations if v.get("status") == "MATCH")
+    partial = sum(1 for v in validations if v.get("status") == "PARTIAL")
+    mismatched = sum(1 for v in validations if v.get("status") == "MISMATCH")
 
-    # Group by product
-    products = {}
-    counterparties = {}
-    total_notional = 0
-
-    for v in validations:
-        product = v.get('product', 'Unknown')
-        products[product] = products.get(product, 0) + 1
-
-        cp = v.get('counterparty', 'Unknown')
-        counterparties[cp] = counterparties.get(cp, 0) + 1
-
-        notional = v.get('notional', 0) or 0
-        total_notional += notional
-
-    # Build detailed list
-    trade_details = []
-    for v in validations:
-        detail = f"- {v.get('counterparty', 'Unknown')}: {v.get('product', 'Unknown')}, "
-        detail += f"Notional: {v.get('currency', 'INR')} {v.get('notional', 0):,.0f}, "
-        detail += f"Trade Date: {v.get('trade_date', 'N/A')}, "
-        detail += f"Status: {v.get('status', 'Unknown')}, "
-        detail += f"Trade ID: {v.get('system_trade_id', 'N/A')}, "
-        detail += f"Confidence: {(v.get('confidence', 0) * 100):.0f}%"
-        trade_details.append(detail)
-
-    summary = f"""
-VALIDATION SUMMARY:
-- Total validations: {total}
-- Matched: {matched}
-- Partial Match: {partial}
-- Not Matched: {not_matched}
-- Total Notional: INR {total_notional:,.0f}
-
-BY PRODUCT:
-{chr(10).join(f'- {k}: {v} trades' for k, v in products.items())}
-
-BY COUNTERPARTY:
-{chr(10).join(f'- {k}: {v} trades' for k, v in counterparties.items())}
-
-INDIVIDUAL TRADES:
-{chr(10).join(trade_details)}
-"""
-    return summary
+    return (
+        f"Total validations: {total}\n"
+        f"Matched: {matched}\n"
+        f"Partial: {partial}\n"
+        f"Mismatched: {mismatched}\n"
+    )
 
 
 def generate_fallback_response(message: str, validations: list) -> str:
-    """Generate response without LLM using simple pattern matching."""
-    message_lower = message.lower()
+    text = message.lower()
 
     total = len(validations)
-    matched = sum(1 for v in validations if v.get('status') == 'MATCH')
-    partial = sum(1 for v in validations if v.get('status') == 'PARTIAL')
-    not_matched = sum(1 for v in validations if v.get('status') == 'MISMATCH')
+    matched = sum(1 for v in validations if v.get("status") == "MATCH")
+    partial = sum(1 for v in validations if v.get("status") == "PARTIAL")
+    mismatched = sum(1 for v in validations if v.get("status") == "MISMATCH")
 
-    if 'how many' in message_lower and 'match' in message_lower:
-        return f"Out of {total} validations:\n- {matched} are fully matched\n- {partial} are partial matches\n- {not_matched} are not matched"
+    if "how many" in text and "match" in text:
+        return (
+            f"Out of {total} validations: {matched} matched, "
+            f"{partial} partial, {mismatched} mismatched."
+        )
 
-    if 'mismatch' in message_lower or 'not match' in message_lower:
-        mismatches = [v for v in validations if v.get('status') in ['MISMATCH', 'PARTIAL']]
-        if not mismatches:
-            return "Great news! There are no mismatched trades."
-        lines = ["Trades with issues:"]
-        for m in mismatches:
-            lines.append(f"- {m.get('counterparty')}: {m.get('product')} - {m.get('status')}")
-        return "\n".join(lines)
+    if "checker" in text:
+        approved = sum(1 for v in validations if v.get("checker_decision") == "APPROVED")
+        rejected = sum(1 for v in validations if v.get("checker_decision") == "REJECTED")
+        overridden = sum(1 for v in validations if v.get("checker_decision") == "OVERRIDDEN")
+        return (
+            f"Checker decisions: approved={approved}, rejected={rejected}, "
+            f"overridden={overridden}."
+        )
 
-    if 'total' in message_lower and 'notional' in message_lower:
-        total_notional = sum(v.get('notional', 0) or 0 for v in validations)
-        return f"Total notional across all validations: INR {total_notional:,.0f}"
-
-    if 'counterpart' in message_lower:
-        counterparties = {}
-        for v in validations:
-            cp = v.get('counterparty', 'Unknown')
-            counterparties[cp] = counterparties.get(cp, 0) + 1
-        sorted_cps = sorted(counterparties.items(), key=lambda x: x[1], reverse=True)
-        lines = ["Counterparties by number of trades:"]
-        for cp, count in sorted_cps:
-            lines.append(f"- {cp}: {count} trade(s)")
-        return "\n".join(lines)
-
-    if 'product' in message_lower or 'irs' in message_lower or 'fx' in message_lower:
-        products = {}
-        for v in validations:
-            product = v.get('product', 'Unknown')
-            products[product] = products.get(product, 0) + 1
-        lines = ["Trades by product type:"]
-        for product, count in products.items():
-            lines.append(f"- {product}: {count} trade(s)")
-        return "\n".join(lines)
-
-    return f"I have {total} validation results loaded. You can ask me about:\n- Match statistics\n- Trades with mismatches\n- Total notional\n- Counterparties\n- Product types"
+    return "Ask about match counts, mismatch trades, or checker decisions."
 
 
-# ============== FX Trades ==============
-
-@router.get("/trades/fx", response_model=List[FXTrade])
-async def get_fx_trades():
-    """Get all FX trades from the system."""
-    return db.get_fx_trades()
+# ============== TRS Trades ==============
 
 
-@router.get("/trades/fx/{trade_id}", response_model=FXTrade)
-async def get_fx_trade(trade_id: str):
-    """Get a specific FX trade by ID."""
-    trade = db.get_fx_trade(trade_id)
+@router.get("/trades/trs", response_model=List[TRSTrade])
+async def get_trs_trades():
+    return db.get_trs_trades()
+
+
+@router.get("/trades/trs/{trade_id}", response_model=TRSTrade)
+async def get_trs_trade(trade_id: str):
+    trade = db.get_trs_trade(trade_id)
     if not trade:
-        raise HTTPException(status_code=404, detail="FX trade not found")
+        raise HTTPException(status_code=404, detail="TRS trade not found")
     return trade
 
 
-@router.post("/trades/fx", response_model=FXTrade)
-async def create_fx_trade(trade: FXTradeCreate):
-    """Create a new FX trade."""
-    return db.create_fx_trade(trade)
+@router.post("/trades/trs", response_model=TRSTrade)
+async def create_trs_trade(trade: TRSTradeCreate):
+    return db.create_trs_trade(trade)
 
 
-@router.put("/trades/fx/{trade_id}", response_model=FXTrade)
-async def update_fx_trade(trade_id: str, trade: FXTradeCreate):
-    """Update an existing FX trade."""
-    updated = db.update_fx_trade(trade_id, trade)
+@router.put("/trades/trs/{trade_id}", response_model=TRSTrade)
+async def update_trs_trade(trade_id: str, trade: TRSTradeCreate):
+    updated = db.update_trs_trade(trade_id, trade)
     if not updated:
-        raise HTTPException(status_code=404, detail="FX trade not found")
+        raise HTTPException(status_code=404, detail="TRS trade not found")
     return updated
 
 
-@router.delete("/trades/fx/{trade_id}")
-async def delete_fx_trade(trade_id: str):
-    """Delete an FX trade."""
-    if not db.delete_fx_trade(trade_id):
-        raise HTTPException(status_code=404, detail="FX trade not found")
+@router.delete("/trades/trs/{trade_id}")
+async def delete_trs_trade(trade_id: str):
+    if not db.delete_trs_trade(trade_id):
+        raise HTTPException(status_code=404, detail="TRS trade not found")
     return {"status": "deleted"}
 
 
-# ============== Swap Trades ==============
+# ============== Trade Import ==============
 
-@router.get("/trades/swap", response_model=List[SwapTrade])
-async def get_swap_trades():
-    """Get all Swap trades from the system."""
-    return db.get_swap_trades()
-
-
-@router.get("/trades/swap/{trade_id}", response_model=SwapTrade)
-async def get_swap_trade(trade_id: str):
-    """Get a specific Swap trade by ID."""
-    trade = db.get_swap_trade(trade_id)
-    if not trade:
-        raise HTTPException(status_code=404, detail="Swap trade not found")
-    return trade
-
-
-@router.post("/trades/swap", response_model=SwapTrade)
-async def create_swap_trade(trade: SwapTradeCreate):
-    """Create a new Swap trade."""
-    return db.create_swap_trade(trade)
-
-
-@router.put("/trades/swap/{trade_id}", response_model=SwapTrade)
-async def update_swap_trade(trade_id: str, trade: SwapTradeCreate):
-    """Update an existing Swap trade."""
-    updated = db.update_swap_trade(trade_id, trade)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Swap trade not found")
-    return updated
-
-
-@router.delete("/trades/swap/{trade_id}")
-async def delete_swap_trade(trade_id: str):
-    """Delete a Swap trade."""
-    if not db.delete_swap_trade(trade_id):
-        raise HTTPException(status_code=404, detail="Swap trade not found")
-    return {"status": "deleted"}
-
-
-# ============== Trade Import/Export ==============
 
 @router.post("/trades/import")
 async def import_trades(data: TradeImport):
-    """Import trades from JSON."""
-    db.import_trades(data.fx_trades, data.swap_trades)
-    return {"status": "imported", "fx_count": len(data.fx_trades), "swap_count": len(data.swap_trades)}
+    db.import_trades(data.trs_trades)
+    return {"status": "imported", "trs_count": len(data.trs_trades)}
 
 
 # ============== Documents ==============
 
+
 @router.get("/documents", response_model=List[Document])
 async def get_documents():
-    """Get all uploaded documents."""
     return db.get_documents()
+
+
+def _resolve_upload_file_type(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext == ".docx":
+        return "docx"
+    if ext == ".msg":
+        return "msg"
+    if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp"}:
+        return "image"
+    raise ValueError(f"File type not allowed: {ext}")
 
 
 @router.post("/documents/upload", response_model=Document)
 async def upload_document(file: UploadFile = File(...)):
-    """Upload a document for processing."""
-    # Validate file type
-    allowed_extensions = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp"]
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in allowed_extensions:
-        raise HTTPException(status_code=400, detail=f"File type not allowed: {ext}")
+    try:
+        file_type = _resolve_upload_file_type(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Check file size
     content = await file.read()
     if len(content) > settings.max_file_size:
         raise HTTPException(status_code=400, detail="File too large")
 
-    # Determine file type
-    if ext == ".pdf":
-        file_type = "pdf"
-    else:
-        file_type = "image"
-
-    # Save file
     doc_id = generate_id()
+    ext = os.path.splitext(file.filename)[1].lower()
     file_path = os.path.join(settings.upload_dir, f"{doc_id}{ext}")
 
-    async with aiofiles.open(file_path, "wb") as f:
-        await f.write(content)
+    async with aiofiles.open(file_path, "wb") as output_file:
+        await output_file.write(content)
 
-    # Create document record
     doc = Document(
         id=doc_id,
         filename=file.filename,
         file_type=file_type,
         file_path=file_path,
-        status="PENDING"
+        status="PENDING",
     )
 
     db.create_document(doc)
     return doc
 
 
+@router.post("/documents/scan-folder")
+async def scan_documents_folder(request: FolderScanRequest):
+    folder = request.folder_path or settings.ingest_scan_dir
+    folder_path = Path(folder)
+
+    if not folder_path.exists() or not folder_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"Folder not found: {folder}")
+
+    existing_paths = {doc.file_path for doc in db.get_documents() if doc.file_path}
+    created: List[Document] = []
+    skipped: List[str] = []
+
+    for file_path in sorted(folder_path.iterdir()):
+        if not file_path.is_file():
+            continue
+
+        try:
+            file_type = _resolve_upload_file_type(file_path.name)
+        except ValueError:
+            skipped.append(f"Unsupported: {file_path.name}")
+            continue
+
+        if str(file_path) in existing_paths:
+            skipped.append(f"Already ingested: {file_path.name}")
+            continue
+
+        doc = Document(
+            id=generate_id(),
+            filename=file_path.name,
+            file_type=file_type,
+            file_path=str(file_path),
+            status="PENDING",
+        )
+        db.create_document(doc)
+        created.append(doc)
+
+    return {
+        "folder": str(folder_path),
+        "created_count": len(created),
+        "created_ids": [doc.id for doc in created],
+        "skipped": skipped,
+    }
+
+
 @router.post("/documents/text", response_model=Document)
 async def submit_text(text_input: TextInput):
-    """Submit text content directly (e.g., pasted email)."""
     doc_id = generate_id()
 
     doc = Document(
@@ -325,7 +269,7 @@ async def submit_text(text_input: TextInput):
         filename=f"text_input_{doc_id[:8]}.txt",
         file_type="text",
         content=text_input.content,
-        status="PENDING"
+        status="PENDING",
     )
 
     db.create_document(doc)
@@ -334,82 +278,60 @@ async def submit_text(text_input: TextInput):
 
 @router.post("/documents/{doc_id}/extract", response_model=Document)
 async def extract_document(doc_id: str):
-    """Extract trade data from a document using LLM."""
     doc = db.get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Update status to processing
     db.update_document(doc_id, {"status": "PROCESSING"})
 
     try:
-        # Get content from document
-        content = doc.content or ""
-
-        if doc.file_type == "text":
-            # Text content is already available
-            pass
-        elif doc.file_type == "pdf" and doc.file_path:
-            # Extract text from PDF
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(doc.file_path)
-                content = "\n".join(page.extract_text() or "" for page in reader.pages)
-            except Exception as e:
-                print(f"PDF extraction failed: {e}")
-                content = f"[PDF content from {doc.filename}]"
-        elif doc.file_type == "image" and doc.file_path:
-            # For images, we'll use the LLM's vision capabilities
-            content = f"[Image content from {doc.filename}]"
-
-        # Extract trade data using LLM
+        evidence = evidence_processor.prepare_document_content(doc)
         extracted_data = await extractor.extract_trade_data(
-            content=content,
-            image_path=doc.file_path if doc.file_type == "image" else None
+            content=evidence.content,
+            image_path=evidence.image_path,
         )
 
-        # Update document with extracted data
-        updated_doc = db.update_document(doc_id, {
-            "status": "EXTRACTED",
-            "content": content,
-            "extracted_data": extracted_data.model_dump()
-        })
+        extracted_payload = extracted_data.model_dump()
+        extracted_payload["evidence_metadata"] = evidence.metadata
+
+        updated_doc = db.update_document(
+            doc_id,
+            {
+                "status": "EXTRACTED",
+                "content": evidence.content,
+                "extracted_data": extracted_payload,
+                "processing_warnings": evidence.metadata.get("warnings", []),
+            },
+        )
 
         return updated_doc
-    except Exception as e:
-        db.update_document(doc_id, {"status": "ERROR"})
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+    except Exception as exc:
+        db.update_document(doc_id, {"status": "ERROR", "processing_warnings": [str(exc)]})
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}") from exc
 
 
 @router.get("/documents/{doc_id}/viewer")
 async def get_document_viewer_data(doc_id: str, page: int = 0):
-    """
-    Get document image with OCR bounding boxes for the document viewer.
-    Returns the document as a base64 image with field coordinates highlighted.
-    """
     from app.services import vision_ocr
 
     doc = db.get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Only works for PDFs and images with file paths
     if not doc.file_path:
         raise HTTPException(status_code=400, detail="Document has no file for viewing")
 
-    if doc.file_type == "text":
-        raise HTTPException(status_code=400, detail="Text documents cannot be viewed as images")
+    if doc.file_type not in {"pdf", "image"}:
+        raise HTTPException(status_code=400, detail="Viewer supports only PDF/image documents")
 
     try:
-        # Process document with Vision OCR
         ocr_result = vision_ocr.process_document(doc.file_path, page_num=page)
 
-        # Get field coordinates if document has been extracted
-        field_coordinates = {}
+        field_coordinates: Dict[str, Dict] = {}
         if doc.extracted_data and doc.extracted_data.get("fields"):
             field_coordinates = vision_ocr.get_field_coordinates(
                 doc.extracted_data["fields"],
-                ocr_result.words
+                ocr_result.words,
             )
 
         return {
@@ -421,25 +343,26 @@ async def get_document_viewer_data(doc_id: str, page: int = 0):
             "image_height": ocr_result.image_height,
             "ocr_words": [
                 {
-                    "text": w.text,
-                    "x": w.x,
-                    "y": w.y,
-                    "width": w.width,
-                    "height": w.height,
-                    "confidence": w.confidence
+                    "text": word.text,
+                    "x": word.x,
+                    "y": word.y,
+                    "width": word.width,
+                    "height": word.height,
+                    "confidence": word.confidence,
                 }
-                for w in ocr_result.words
+                for word in ocr_result.words
             ],
             "field_coordinates": field_coordinates,
-            "extracted_data": doc.extracted_data
+            "extracted_data": doc.extracted_data,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to process document: {exc}") from exc
 
 
 @router.post("/documents/{doc_id}/validate", response_model=Document)
 async def validate_document(doc_id: str):
-    """Validate extracted document data against system records."""
+    from app.models import ExtractedField, ExtractedTrade
+
     doc = db.get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -448,76 +371,171 @@ async def validate_document(doc_id: str):
         raise HTTPException(status_code=400, detail="Document has not been extracted yet")
 
     try:
-        from app.models import ExtractedTrade, ExtractedField
-
-        # Reconstruct ExtractedTrade from stored dict
         extracted = ExtractedTrade(
-            trade_type=doc.extracted_data.get("trade_type", "FX"),
+            trade_type="TRS",
+            schema_version=doc.extracted_data.get("schema_version"),
             fields={
-                k: ExtractedField(**v) if isinstance(v, dict) else ExtractedField(value=v, confidence=0.5)
-                for k, v in doc.extracted_data.get("fields", {}).items()
+                key: ExtractedField(**value)
+                if isinstance(value, dict)
+                else ExtractedField(value=value, confidence=0.5)
+                for key, value in doc.extracted_data.get("fields", {}).items()
             },
-            raw_text=doc.extracted_data.get("raw_text")
+            raw_text=doc.extracted_data.get("raw_text"),
         )
 
-        # Load matching rules
-        rules = db.get_matching_rules()
-        comparison_engine.set_rules(rules)
+        comparison_engine.set_rules(db.get_matching_rules())
 
-        # Get system trades
-        fx_trades = db.get_fx_trades()
-        swap_trades = db.get_swap_trades()
-
-        # Find best match and compare
         validation_result = comparison_engine.find_best_match(
             extracted=extracted,
-            fx_trades=fx_trades,
-            swap_trades=swap_trades,
-            document_id=doc_id
+            trs_trades=db.get_trs_trades(),
+            document_id=doc_id,
         )
 
-        if validation_result:
-            db.create_validation_result(validation_result)
+        if not validation_result:
+            validation_result = comparison_engine.build_unmatched_result(
+                extracted=extracted,
+                document_id=doc_id,
+            )
 
-            updated_doc = db.update_document(doc_id, {
-                "status": "VALIDATED",
-                "validation_result": validation_result.model_dump()
-            })
-            return updated_doc
-        else:
-            updated_doc = db.update_document(doc_id, {
-                "status": "ERROR",
-                "validation_result": {
-                    "id": generate_id(),
-                    "document_id": doc_id,
-                    "system_trade_id": "NOT_FOUND",
-                    "status": "MISMATCH",
-                    "field_comparisons": [],
-                    "created_at": datetime.now().isoformat()
-                }
-            })
-            return updated_doc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+        machine_conf = validation_result.machine_confidence or 0.0
+        auto_passed = validation_result.status == "MATCH" and machine_conf >= settings.auto_pass_threshold
+
+        validation_payload = validation_result.model_dump()
+        validation_payload["auto_passed"] = auto_passed
+        if auto_passed:
+            validation_payload["checker_decision"] = "APPROVED"
+            validation_payload["checked_at"] = datetime.now().isoformat()
+            validation_payload["checker_comment"] = (
+                f"Auto-approved by threshold >= {settings.auto_pass_threshold:.2f}"
+            )
+
+        stored_result = ValidationResult(**validation_payload)
+        db.create_validation_result(stored_result)
+
+        updated_doc = db.update_document(
+            doc_id,
+            {"status": "VALIDATED", "validation_result": stored_result.model_dump()},
+        )
+        return updated_doc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Validation failed: {exc}") from exc
 
 
 # ============== Matching Rules ==============
 
+
 @router.get("/rules", response_model=List[MatchingRule])
 async def get_matching_rules():
-    """Get all matching rules."""
     return db.get_matching_rules()
 
 
 @router.put("/rules", response_model=List[MatchingRule])
 async def save_matching_rules(rules: List[MatchingRule]):
-    """Save matching rules."""
     return db.save_matching_rules(rules)
 
 
 # ============== Validation Results ==============
 
+
 @router.get("/validations", response_model=List[ValidationResult])
 async def get_validation_results():
-    """Get all validation results."""
     return db.get_validation_results()
+
+
+@router.post("/validations/{validation_id}/checker", response_model=ValidationResult)
+async def checker_action(validation_id: str, request: CheckerActionRequest):
+    validation = db.get_validation_result(validation_id)
+    if not validation:
+        raise HTTPException(status_code=404, detail="Validation not found")
+
+    updates: Dict[str, object] = {
+        "checked_at": datetime.now().isoformat(),
+        "checker_comment": request.comment,
+    }
+
+    if request.decision == "APPROVE":
+        updates["checker_decision"] = "APPROVED"
+    elif request.decision == "REJECT":
+        updates["checker_decision"] = "REJECTED"
+    else:
+        if not request.override_status:
+            raise HTTPException(status_code=400, detail="override_status is required for OVERRIDE")
+        updates["checker_decision"] = "OVERRIDDEN"
+        updates["checker_override_status"] = request.override_status
+        updates["status"] = request.override_status
+        if request.override_system_trade_id:
+            updates["checker_override_trade_id"] = request.override_system_trade_id
+            updates["system_trade_id"] = request.override_system_trade_id
+
+    updated_validation = db.update_validation_result(validation_id, updates)
+    if not updated_validation:
+        raise HTTPException(status_code=500, detail="Failed to update validation")
+
+    doc = db.get_document(updated_validation.document_id)
+    if doc:
+        db.update_document(doc.id, {"validation_result": updated_validation.model_dump()})
+
+    return updated_validation
+
+
+@router.get("/validations/report")
+async def export_validation_report():
+    validations = db.get_validation_results()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "validation_id",
+            "document_id",
+            "machine_status",
+            "checker_decision",
+            "system_trade_id",
+            "party_a",
+            "party_b",
+            "trade_date",
+            "effective_date",
+            "scheduled_termination_date",
+            "local_currency",
+            "notional_amount",
+            "machine_confidence",
+            "auto_passed",
+            "checked_at",
+            "checker_comment",
+            "created_at",
+        ]
+    )
+
+    for result in validations:
+        writer.writerow(
+            [
+                result.id,
+                result.document_id,
+                result.status,
+                result.checker_decision,
+                result.system_trade_id,
+                result.party_a or "",
+                result.party_b or "",
+                result.trade_date or "",
+                result.effective_date or "",
+                result.scheduled_termination_date or "",
+                result.local_currency or "",
+                result.notional_amount or "",
+                result.machine_confidence or "",
+                result.auto_passed,
+                result.checked_at or "",
+                result.checker_comment or "",
+                result.created_at,
+            ]
+        )
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=trs_validation_report.csv"},
+    )
+
+
+@router.get("/schema/trs")
+async def get_trs_schema():
+    return extractor.schema

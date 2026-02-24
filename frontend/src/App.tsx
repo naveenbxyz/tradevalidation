@@ -16,17 +16,17 @@ function App() {
               <div className="flex items-center space-x-8">
                 <div className="flex items-center space-x-2">
                   <CheckSquare className="h-6 w-6 text-primary" />
-                  <span className="font-bold text-lg">Trade Validator</span>
+                  <span className="font-bold text-lg">TRS Validator</span>
                 </div>
                 <div className="flex items-center space-x-1">
                   <NavItem to="/" icon={<LayoutDashboard className="h-4 w-4" />}>
                     Dashboard
                   </NavItem>
                   <NavItem to="/upload" icon={<FileUp className="h-4 w-4" />}>
-                    Upload
+                    Evidence
                   </NavItem>
                   <NavItem to="/trades" icon={<LineChart className="h-4 w-4" />}>
-                    Trades
+                    TRS Trades
                   </NavItem>
                   <NavItem to="/rules" icon={<Settings className="h-4 w-4" />}>
                     Matching Rules

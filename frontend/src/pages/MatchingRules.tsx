@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Plus, Trash2, Save } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Plus, Save, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,29 +16,22 @@ import type { MatchingRule } from '@/types/trade';
 
 const API_BASE = 'http://localhost:8000';
 
-const DEFAULT_FX_FIELDS = [
+const TRS_FIELDS = [
   'trade_id',
-  'counterparty',
-  'currency_pair',
-  'direction',
-  'notional',
-  'rate',
+  'party_a',
+  'party_b',
   'trade_date',
-  'value_date',
-];
-
-const DEFAULT_SWAP_FIELDS = [
-  'trade_id',
-  'counterparty',
-  'trade_type',
-  'notional',
-  'currency',
-  'fixed_rate',
-  'floating_index',
-  'spread',
   'effective_date',
-  'maturity_date',
-  'payment_frequency',
+  'scheduled_termination_date',
+  'bond_return_payer',
+  'bond_return_receiver',
+  'local_currency',
+  'notional_amount',
+  'usd_notional_amount',
+  'initial_spot_rate',
+  'current_market_price',
+  'underlier',
+  'isin',
 ];
 
 export function MatchingRules() {
@@ -54,81 +47,82 @@ export function MatchingRules() {
       const response = await fetch(`${API_BASE}/api/rules`);
       if (response.ok) {
         const data = await response.json();
-        setRules(data);
-      } else {
-        // Initialize with default rules if none exist
-        initializeDefaultRules();
+        if (data.length > 0) {
+          setRules(data);
+          return;
+        }
       }
-    } catch (error) {
-      console.error('Failed to fetch rules:', error);
+      initializeDefaultRules();
+    } catch {
       initializeDefaultRules();
     }
   };
 
   const initializeDefaultRules = () => {
-    const defaultRules: MatchingRule[] = [
-      ...DEFAULT_FX_FIELDS.map((field, index) => ({
-        id: `fx-${index}`,
-        field_name: field,
-        rule_type: getDefaultRuleType(field) as MatchingRule['rule_type'],
-        tolerance_value: getDefaultTolerance(field),
-        tolerance_unit: getDefaultToleranceUnit(field) as MatchingRule['tolerance_unit'],
-        enabled: true,
-      })),
-      ...DEFAULT_SWAP_FIELDS.map((field, index) => ({
-        id: `swap-${index}`,
-        field_name: field,
-        rule_type: getDefaultRuleType(field) as MatchingRule['rule_type'],
-        tolerance_value: getDefaultTolerance(field),
-        tolerance_unit: getDefaultToleranceUnit(field) as MatchingRule['tolerance_unit'],
-        enabled: true,
-      })),
-    ];
-    setRules(defaultRules);
+    const defaults: MatchingRule[] = TRS_FIELDS.map((field, index) => ({
+      id: `trs-${index}`,
+      field_name: field,
+      rule_type: defaultRuleType(field),
+      tolerance_value: defaultTolerance(field),
+      tolerance_unit: defaultToleranceUnit(field),
+      min_confidence: defaultMinConfidence(field),
+      enabled: true,
+    }));
+    setRules(defaults);
   };
 
-  const getDefaultRuleType = (field: string): string => {
+  const defaultRuleType = (field: string): MatchingRule['rule_type'] => {
     if (field.includes('date')) return 'date_tolerance';
-    if (field === 'rate' || field === 'fixed_rate' || field === 'spread') return 'tolerance';
-    if (field === 'notional') return 'tolerance';
-    if (field === 'counterparty') return 'fuzzy';
+    if (['notional_amount', 'usd_notional_amount', 'initial_spot_rate', 'current_market_price'].includes(field)) {
+      return 'tolerance';
+    }
+    if (['party_a', 'party_b', 'underlier'].includes(field)) return 'fuzzy';
     return 'exact';
   };
 
-  const getDefaultTolerance = (field: string): number => {
+  const defaultTolerance = (field: string): number | undefined => {
     if (field.includes('date')) return 1;
-    if (field === 'rate' || field === 'fixed_rate') return 0.01;
-    if (field === 'spread') return 0.01;
-    if (field === 'notional') return 0.01;
-    return 0;
+    if (field.includes('notional')) return 0.1;
+    if (field === 'initial_spot_rate') return 0.001;
+    if (field === 'current_market_price') return 0.25;
+    return undefined;
   };
 
-  const getDefaultToleranceUnit = (field: string): string => {
+  const defaultToleranceUnit = (field: string): MatchingRule['tolerance_unit'] | undefined => {
     if (field.includes('date')) return 'days';
-    if (field === 'notional') return 'percent';
-    return 'absolute';
+    if (field.includes('notional')) return 'percent';
+    if (field === 'initial_spot_rate' || field === 'current_market_price') return 'absolute';
+    return undefined;
+  };
+
+  const defaultMinConfidence = (field: string): number => {
+    if (['bond_return_payer', 'bond_return_receiver', 'local_currency'].includes(field)) return 0.9;
+    if (field.includes('date') || field.includes('notional')) return 0.85;
+    if (['party_a', 'party_b'].includes(field)) return 0.8;
+    return 0.7;
   };
 
   const updateRule = (id: string, updates: Partial<MatchingRule>) => {
-    setRules(rules.map(rule =>
-      rule.id === id ? { ...rule, ...updates } : rule
-    ));
+    setRules((prev) => prev.map((rule) => (rule.id === id ? { ...rule, ...updates } : rule)));
     setHasChanges(true);
   };
 
-  const addRule = () => {
-    const newRule: MatchingRule = {
-      id: `custom-${Date.now()}`,
-      field_name: '',
-      rule_type: 'exact',
-      enabled: true,
-    };
-    setRules([...rules, newRule]);
+  const addCustomRule = () => {
+    setRules((prev) => [
+      ...prev,
+      {
+        id: `custom-${Date.now()}`,
+        field_name: '',
+        rule_type: 'exact',
+        min_confidence: 0.7,
+        enabled: true,
+      },
+    ]);
     setHasChanges(true);
   };
 
   const deleteRule = (id: string) => {
-    setRules(rules.filter(rule => rule.id !== id));
+    setRules((prev) => prev.filter((rule) => rule.id !== id));
     setHasChanges(true);
   };
 
@@ -139,7 +133,6 @@ export function MatchingRules() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rules),
       });
-
       if (response.ok) {
         setHasChanges(false);
       }
@@ -148,21 +141,15 @@ export function MatchingRules() {
     }
   };
 
-  const fxRules = rules.filter(r => r.id.startsWith('fx-') || DEFAULT_FX_FIELDS.includes(r.field_name));
-  const swapRules = rules.filter(r => r.id.startsWith('swap-') || DEFAULT_SWAP_FIELDS.includes(r.field_name));
-  const customRules = rules.filter(r => r.id.startsWith('custom-'));
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Matching Rules</h1>
-          <p className="text-muted-foreground">
-            Configure how fields are compared during validation
-          </p>
+          <h1 className="text-3xl font-bold tracking-tight">TRS Matching Rules</h1>
+          <p className="text-muted-foreground">Configure field-level matching type, tolerance, and confidence requirement.</p>
         </div>
         <div className="flex space-x-2">
-          <Button variant="outline" onClick={addRule}>
+          <Button variant="outline" onClick={addCustomRule}>
             <Plus className="mr-2 h-4 w-4" />
             Add Rule
           </Button>
@@ -173,93 +160,13 @@ export function MatchingRules() {
         </div>
       </div>
 
-      <div className="grid gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>FX Trade Rules</CardTitle>
-            <CardDescription>
-              Matching rules for foreign exchange trades
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <RulesList
-              rules={fxRules}
-              onUpdate={updateRule}
-              onDelete={deleteRule}
-            />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Swap Trade Rules</CardTitle>
-            <CardDescription>
-              Matching rules for interest rate and currency swaps
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <RulesList
-              rules={swapRules}
-              onUpdate={updateRule}
-              onDelete={deleteRule}
-            />
-          </CardContent>
-        </Card>
-
-        {customRules.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Custom Rules</CardTitle>
-              <CardDescription>
-                User-defined matching rules
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <RulesList
-                rules={customRules}
-                onUpdate={updateRule}
-                onDelete={deleteRule}
-                allowDelete
-              />
-            </CardContent>
-          </Card>
-        )}
-      </div>
-
       <Card>
         <CardHeader>
-          <CardTitle>Rule Types Reference</CardTitle>
-          <CardDescription>
-            Understanding different matching strategies
-          </CardDescription>
+          <CardTitle>Field Rules</CardTitle>
+          <CardDescription>Rules apply during validation before checker review.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="border rounded-lg p-4">
-              <h4 className="font-semibold mb-2">Exact Match</h4>
-              <p className="text-sm text-muted-foreground">
-                Values must be identical. Best for IDs, directions, and categorical fields.
-              </p>
-            </div>
-            <div className="border rounded-lg p-4">
-              <h4 className="font-semibold mb-2">Tolerance</h4>
-              <p className="text-sm text-muted-foreground">
-                Allows small differences. Use for rates (e.g., +/- 0.0001) or notionals (e.g., +/- 0.01%).
-              </p>
-            </div>
-            <div className="border rounded-lg p-4">
-              <h4 className="font-semibold mb-2">Fuzzy Match</h4>
-              <p className="text-sm text-muted-foreground">
-                Uses string similarity. Good for counterparty names with slight variations.
-              </p>
-            </div>
-            <div className="border rounded-lg p-4">
-              <h4 className="font-semibold mb-2">Date Tolerance</h4>
-              <p className="text-sm text-muted-foreground">
-                Allows date differences in days. Useful for T+1/T+2 flexibility on settlement dates.
-              </p>
-            </div>
-          </div>
+          <RulesList rules={rules} onUpdate={updateRule} onDelete={deleteRule} />
         </CardContent>
       </Card>
     </div>
@@ -270,25 +177,18 @@ interface RulesListProps {
   rules: MatchingRule[];
   onUpdate: (id: string, updates: Partial<MatchingRule>) => void;
   onDelete: (id: string) => void;
-  allowDelete?: boolean;
 }
 
-function RulesList({ rules, onUpdate, onDelete, allowDelete }: RulesListProps) {
+function RulesList({ rules, onUpdate, onDelete }: RulesListProps) {
   return (
     <div className="space-y-4">
       {rules.map((rule) => (
-        <div
-          key={rule.id}
-          className="flex items-center space-x-4 p-4 border rounded-lg"
-        >
-          <Switch
-            checked={rule.enabled}
-            onCheckedChange={(checked) => onUpdate(rule.id, { enabled: checked })}
-          />
+        <div key={rule.id} className="flex items-center space-x-4 p-4 border rounded-lg">
+          <Switch checked={rule.enabled} onCheckedChange={(checked) => onUpdate(rule.id, { enabled: checked })} />
 
-          <div className="flex-1 grid grid-cols-4 gap-4">
+          <div className="flex-1 grid grid-cols-5 gap-4">
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Field Name</Label>
+              <Label className="text-xs text-muted-foreground">Field</Label>
               <Input
                 value={rule.field_name}
                 onChange={(e) => onUpdate(rule.id, { field_name: e.target.value })}
@@ -315,61 +215,55 @@ function RulesList({ rules, onUpdate, onDelete, allowDelete }: RulesListProps) {
               </Select>
             </div>
 
-            {(rule.rule_type === 'tolerance' || rule.rule_type === 'date_tolerance') && (
-              <>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Tolerance</Label>
-                  <Input
-                    type="number"
-                    step={rule.rule_type === 'date_tolerance' ? '1' : '0.0001'}
-                    value={rule.tolerance_value || 0}
-                    onChange={(e) => onUpdate(rule.id, { tolerance_value: parseFloat(e.target.value) })}
-                    className="h-8"
-                  />
-                </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Tolerance</Label>
+              <Input
+                type="number"
+                step="any"
+                className="h-8"
+                value={rule.tolerance_value ?? ''}
+                onChange={(e) => onUpdate(rule.id, { tolerance_value: Number(e.target.value) || undefined })}
+                disabled={rule.rule_type !== 'tolerance' && rule.rule_type !== 'date_tolerance'}
+              />
+            </div>
 
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Unit</Label>
-                  <Select
-                    value={rule.tolerance_unit || 'absolute'}
-                    onValueChange={(value) => onUpdate(rule.id, { tolerance_unit: value as MatchingRule['tolerance_unit'] })}
-                  >
-                    <SelectTrigger className="h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {rule.rule_type === 'date_tolerance' ? (
-                        <SelectItem value="days">Days</SelectItem>
-                      ) : (
-                        <>
-                          <SelectItem value="absolute">Absolute</SelectItem>
-                          <SelectItem value="percent">Percent</SelectItem>
-                        </>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            )}
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Unit</Label>
+              <Select
+                value={rule.tolerance_unit || 'absolute'}
+                onValueChange={(value) => onUpdate(rule.id, { tolerance_unit: value as MatchingRule['tolerance_unit'] })}
+                disabled={rule.rule_type !== 'tolerance' && rule.rule_type !== 'date_tolerance'}
+              >
+                <SelectTrigger className="h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="absolute">Absolute</SelectItem>
+                  <SelectItem value="percent">Percent</SelectItem>
+                  <SelectItem value="days">Days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Min Confidence</Label>
+              <Input
+                type="number"
+                min={0}
+                max={1}
+                step="0.01"
+                className="h-8"
+                value={rule.min_confidence}
+                onChange={(e) => onUpdate(rule.id, { min_confidence: Number(e.target.value) })}
+              />
+            </div>
           </div>
 
-          {allowDelete && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => onDelete(rule.id)}
-            >
-              <Trash2 className="h-4 w-4 text-destructive" />
-            </Button>
-          )}
+          <Button variant="ghost" size="icon" onClick={() => onDelete(rule.id)}>
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
         </div>
       ))}
-
-      {rules.length === 0 && (
-        <div className="text-center text-muted-foreground py-8">
-          No rules configured. Click "Add Rule" to create one.
-        </div>
-      )}
     </div>
   );
 }

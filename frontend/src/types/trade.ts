@@ -1,42 +1,45 @@
-export type TradeType = 'FX' | 'SWAP';
+export type TradeType = 'TRS';
 
-export interface FXTrade {
+export interface TRSTrade {
   id: string;
   trade_id: string;
-  counterparty: string;
-  currency_pair: string;
-  direction: 'BUY' | 'SELL';
-  notional: number;
-  rate: number;
+  party_a: string;
+  party_b: string;
   trade_date: string;
-  value_date: string;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface SwapTrade {
-  id: string;
-  trade_id: string;
-  counterparty: string;
-  trade_type: 'IRS' | 'CCS' | 'BASIS';
-  notional: number;
-  currency: string;
-  fixed_rate: number;
-  floating_index: string;
-  spread: number;
   effective_date: string;
-  maturity_date: string;
-  payment_frequency: string;
+  scheduled_termination_date: string;
+  bond_return_payer: 'PartyA' | 'PartyB';
+  bond_return_receiver: 'PartyA' | 'PartyB';
+  local_currency: string;
+  notional_amount: number;
+  usd_notional_amount: number;
+  initial_spot_rate: number;
+  current_market_price: number;
+  underlier?: string;
+  isin?: string;
   created_at?: string;
   updated_at?: string;
 }
 
-export type Trade = FXTrade | SwapTrade;
+export interface FieldProvenance {
+  source_type: 'email_body' | 'attachment' | 'ocr' | 'unknown';
+  source_name?: string | null;
+  page?: number | null;
+  bbox?: Record<string, number> | null;
+}
+
+export interface ExtractedField {
+  value: string | number | null;
+  confidence: number;
+  provenance?: FieldProvenance;
+}
 
 export interface ExtractedTrade {
   trade_type: TradeType;
-  fields: Record<string, { value: string | number; confidence: number }>;
+  schema_version?: string;
+  fields: Record<string, ExtractedField>;
   raw_text?: string;
+  evidence_metadata?: Record<string, unknown>;
 }
 
 export interface MatchingRule {
@@ -45,10 +48,9 @@ export interface MatchingRule {
   rule_type: 'exact' | 'tolerance' | 'fuzzy' | 'date_tolerance';
   tolerance_value?: number;
   tolerance_unit?: 'percent' | 'absolute' | 'days';
+  min_confidence: number;
   enabled: boolean;
 }
-
-export type ProductType = 'FX Spot' | 'FX Swap' | 'FX NDF' | 'IRS' | 'CCS' | 'Commodity';
 
 export interface ValidationResult {
   id: string;
@@ -57,34 +59,42 @@ export interface ValidationResult {
   status: 'MATCH' | 'MISMATCH' | 'PARTIAL' | 'PENDING';
   field_comparisons: FieldComparison[];
   created_at: string;
-  // Enriched fields for dashboard display
-  counterparty?: string;
-  product?: ProductType;
-  notional?: number;
-  currency?: string;
+  party_a?: string;
+  party_b?: string;
+  product: 'TRS';
   trade_date?: string;
   effective_date?: string;
-  maturity_date?: string;
-  confidence?: number;
+  scheduled_termination_date?: string;
+  local_currency?: string;
+  notional_amount?: number;
+  machine_confidence?: number;
+  auto_passed: boolean;
+  checker_decision: 'PENDING' | 'APPROVED' | 'REJECTED' | 'OVERRIDDEN';
+  checker_comment?: string;
+  checker_override_status?: 'MATCH' | 'MISMATCH' | 'PARTIAL';
+  checker_override_trade_id?: string;
+  checked_at?: string;
 }
 
 export interface FieldComparison {
   field_name: string;
-  extracted_value: string | number;
-  system_value: string | number;
-  match_status: 'MATCH' | 'MISMATCH' | 'WITHIN_TOLERANCE';
+  extracted_value: string | number | null;
+  system_value: string | number | null;
+  match_status: 'MATCH' | 'MISMATCH' | 'WITHIN_TOLERANCE' | 'LOW_CONFIDENCE';
   confidence: number;
+  min_required_confidence?: number;
   rule_applied?: string;
 }
 
 export interface Document {
   id: string;
   filename: string;
-  file_type: 'pdf' | 'image' | 'text';
+  file_type: 'pdf' | 'image' | 'text' | 'msg' | 'docx';
   upload_date: string;
   status: 'PENDING' | 'PROCESSING' | 'EXTRACTED' | 'VALIDATED' | 'ERROR';
   extracted_data?: ExtractedTrade;
   validation_result?: ValidationResult;
+  processing_warnings?: string[];
 }
 
 export interface OCRWord {

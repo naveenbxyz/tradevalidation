@@ -24,7 +24,7 @@ export function ChatBubble({ validationResults }: ChatBubbleProps) {
     {
       id: '1',
       role: 'assistant',
-      content: 'Hello! I can help you analyze the validation results. Ask me questions like:\n\n- "How many trades are matched?"\n- "Show me trades with mismatches"\n- "What is the total notional for IRS trades?"\n- "Which counterparty has the most trades?"',
+      content: 'I can help analyze TRS validation outcomes. Ask questions like:\n\n- "How many trades are matched?"\n- "Show me mismatches"\n- "How many were checker approved?"\n- "What is the total notional?"',
       timestamp: new Date(),
     }
   ]);

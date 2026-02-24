@@ -5,7 +5,7 @@ from app.config import settings
 
 app = FastAPI(
     title=settings.app_name,
-    description="Trade Validation System API - Extract and validate trade confirmations using LLM",
+    description="TRS Trade Validation API - Extract and validate confirmation evidence using LLM",
     version="1.0.0"
 )
 
@@ -25,7 +25,7 @@ app.include_router(router, prefix="/api")
 @app.get("/")
 async def root():
     return {
-        "message": "Trade Validation API",
+        "message": "TRS Trade Validation API",
         "version": "1.0.0",
         "docs": "/docs"
     }

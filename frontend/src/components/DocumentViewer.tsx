@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { Loader2, ZoomIn, ZoomOut, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import type { DocumentViewerData, FieldCoordinate } from '@/types/trade';
 
 const API_BASE = 'http://localhost:8000';
@@ -10,22 +9,20 @@ const API_BASE = 'http://localhost:8000';
 // Color palette for different field types
 const FIELD_COLORS: Record<string, string> = {
   trade_id: '#3b82f6',      // blue
-  counterparty: '#8b5cf6',   // purple
+  party_a: '#0ea5e9',        // sky
+  party_b: '#8b5cf6',        // violet
   trade_date: '#10b981',     // green
   effective_date: '#10b981', // green
-  maturity_date: '#f59e0b',  // amber
-  value_date: '#f59e0b',     // amber
-  notional: '#ef4444',       // red
-  rate: '#ec4899',           // pink
-  fixed_rate: '#ec4899',     // pink
-  floating_rate: '#f97316',  // orange
-  floating_index: '#06b6d4', // cyan
-  currency: '#6366f1',       // indigo
-  currency_pair: '#6366f1',  // indigo
-  direction: '#84cc16',      // lime
-  spread: '#14b8a6',         // teal
-  payment_frequency: '#a855f7', // purple
-  trade_type: '#64748b',     // slate
+  scheduled_termination_date: '#f59e0b', // amber
+  notional_amount: '#ef4444', // red
+  usd_notional_amount: '#dc2626', // darker red
+  initial_spot_rate: '#ec4899', // pink
+  current_market_price: '#f97316', // orange
+  local_currency: '#6366f1',  // indigo
+  bond_return_payer: '#84cc16', // lime
+  bond_return_receiver: '#14b8a6', // teal
+  underlier: '#a855f7', // purple
+  isin: '#64748b', // slate
 };
 
 function getFieldColor(fieldName: string): string {

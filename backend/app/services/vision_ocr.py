@@ -28,7 +28,7 @@ class OCRResult:
     full_text: str
     image_width: int
     image_height: int
-    image_base64: str  # Base64 encoded image for frontend display
+    image_base64: str  # Base64 encoded image for frontend display (optional)
 
 
 def pdf_to_image(pdf_path: str, page_num: int = 0, dpi: int = 150) -> Tuple[bytes, int, int]:
@@ -146,7 +146,7 @@ def run_vision_ocr(image_bytes: bytes) -> List[OCRWord]:
     return words
 
 
-def process_document(file_path: str, page_num: int = 0) -> OCRResult:
+def process_document(file_path: str, page_num: int = 0, include_image: bool = True) -> OCRResult:
     """
     Process a document (PDF or image) and return OCR results with bounding boxes
     """
@@ -166,8 +166,8 @@ def process_document(file_path: str, page_num: int = 0) -> OCRResult:
     # Build full text
     full_text = "\n".join([w.text for w in words])
 
-    # Encode image as base64 for frontend
-    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+    # Encode image only when needed (viewer endpoints)
+    image_base64 = base64.b64encode(image_bytes).decode('utf-8') if include_image else ""
 
     return OCRResult(
         words=words,

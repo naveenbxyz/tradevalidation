@@ -1,0 +1,22 @@
+{
+  "version": "v1",
+  "trade_type": "TRS",
+  "description": "Total Return Swap confirmation extraction schema",
+  "fields": [
+    {"name": "trade_id", "type": "string", "required": false, "description": "Unique trade reference if available"},
+    {"name": "party_a", "type": "string", "required": true, "description": "Our bank legal entity name"},
+    {"name": "party_b", "type": "string", "required": true, "description": "Counterparty legal entity name"},
+    {"name": "trade_date", "type": "date", "required": true, "format": "YYYY-MM-DD"},
+    {"name": "effective_date", "type": "date", "required": true, "format": "YYYY-MM-DD"},
+    {"name": "scheduled_termination_date", "type": "date", "required": true, "format": "YYYY-MM-DD"},
+    {"name": "bond_return_payer", "type": "enum", "required": true, "allowed_values": ["PartyA", "PartyB"]},
+    {"name": "bond_return_receiver", "type": "enum", "required": true, "allowed_values": ["PartyA", "PartyB"]},
+    {"name": "local_currency", "type": "string", "required": true, "description": "Currency of local notional"},
+    {"name": "notional_amount", "type": "number", "required": true},
+    {"name": "usd_notional_amount", "type": "number", "required": true},
+    {"name": "initial_spot_rate", "type": "number", "required": true},
+    {"name": "current_market_price", "type": "number", "required": true},
+    {"name": "underlier", "type": "string", "required": false, "description": "Reference bond/asset"},
+    {"name": "isin", "type": "string", "required": false, "description": "Underlier ISIN if available"}
+  ]
+}

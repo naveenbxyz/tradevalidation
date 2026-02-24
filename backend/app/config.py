@@ -1,24 +1,28 @@
-from pydantic_settings import BaseSettings
-from typing import Optional
 import os
+from typing import Optional
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # API Settings
-    app_name: str = "Trade Validation API"
+    app_name: str = "TRS Trade Validation API"
     debug: bool = True
 
     # LLM Settings
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
-    llm_model: str = "gpt-4-vision-preview"
+    llm_model: str = "gpt-4.1-mini"
 
-    # Database
-    database_path: str = "../data/trades.db"
-
-    # File Upload
+    # Data & file paths
+    database_path: str = "../data/database.json"
     upload_dir: str = "../data/uploads"
-    max_file_size: int = 10 * 1024 * 1024  # 10MB
+    ingest_scan_dir: str = "../data/inbox"
+    trs_schema_path: str = "app/schema_configs/trs_schema.json"
+
+    # Controls
+    max_file_size: int = 20 * 1024 * 1024  # 20MB
+    auto_pass_threshold: float = 0.85
 
     class Config:
         env_file = ".env"
@@ -27,5 +31,5 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Ensure upload directory exists
 os.makedirs(settings.upload_dir, exist_ok=True)
+os.makedirs(settings.ingest_scan_dir, exist_ok=True)
