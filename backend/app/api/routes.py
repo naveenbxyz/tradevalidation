@@ -276,6 +276,94 @@ async def submit_text(text_input: TextInput):
     return doc
 
 
+def _build_content_extraction_result(
+    evidence: "evidence_processor.NormalizedEvidence",
+    doc: Document,
+) -> Dict[str, object]:
+    """Build a structured content-extraction result from NormalizedEvidence."""
+    meta = evidence.metadata
+    result: Dict[str, object] = {
+        "raw_text": evidence.content,
+        "metadata": meta,
+        "warnings": meta.get("warnings", []),
+        "attachments": [],
+        "images": [],
+    }
+
+    if doc.file_type == "msg":
+        result["email_subject"] = meta.get("subject")
+        result["email_sender"] = meta.get("sender")
+        # Separate the email body from attachment sections
+        if "[Attachment:" in evidence.content:
+            result["email_body"] = evidence.content.split("[Attachment:")[0].strip()
+        else:
+            result["email_body"] = evidence.content
+
+        attachments_list = []
+        images_list = []
+        for att in meta.get("attachments", []):
+            att_info = {
+                "name": att.get("attachment_name", "unknown"),
+                "source_type": att.get("source_type", "unknown"),
+                "text_length": (
+                    att.get("pdf_text_length", 0)
+                    or att.get("ocr_text_length", 0)
+                    or att.get("docx_text_length", 0)
+                ),
+            }
+            attachments_list.append(att_info)
+            if att.get("source_type") == "image":
+                images_list.append(att_info)
+        result["attachments"] = attachments_list
+        result["images"] = images_list
+
+    elif doc.file_type == "image":
+        result["images"] = [
+            {
+                "name": doc.filename,
+                "source_type": "image",
+                "text_length": meta.get("ocr_text_length", 0),
+            }
+        ]
+    elif doc.file_type == "pdf" and meta.get("ocr_used"):
+        result["images"] = [
+            {
+                "name": f"{doc.filename} (OCR pages)",
+                "source_type": "pdf_ocr",
+                "text_length": meta.get("ocr_text_length", 0),
+            }
+        ]
+
+    return result
+
+
+@router.post("/documents/{doc_id}/content-extract", response_model=Document)
+async def content_extract_document(doc_id: str):
+    """Step 2: Extract raw content from document without LLM processing."""
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    db.update_document(doc_id, {"status": "PROCESSING"})
+
+    try:
+        evidence = evidence_processor.prepare_document_content(doc)
+        content_extraction = _build_content_extraction_result(evidence, doc)
+
+        updated_doc = db.update_document(
+            doc_id,
+            {
+                "content": evidence.content,
+                "content_extraction": content_extraction,
+                "processing_warnings": evidence.metadata.get("warnings", []),
+            },
+        )
+        return updated_doc
+    except Exception as exc:
+        db.update_document(doc_id, {"status": "ERROR", "processing_warnings": [str(exc)]})
+        raise HTTPException(status_code=500, detail=f"Content extraction failed: {exc}") from exc
+
+
 @router.post("/documents/{doc_id}/extract", response_model=Document)
 async def extract_document(doc_id: str):
     doc = db.get_document(doc_id)
@@ -285,22 +373,37 @@ async def extract_document(doc_id: str):
     db.update_document(doc_id, {"status": "PROCESSING"})
 
     try:
-        evidence = evidence_processor.prepare_document_content(doc)
+        # If content was already extracted (pipeline flow), reuse it
+        if doc.content and doc.content.strip():
+            content = doc.content
+            image_path = None
+            metadata: Dict[str, object] = {}
+            # For image or msg files, try to find the image path
+            if doc.file_path and doc.file_type == "image":
+                image_path = doc.file_path
+            elif doc.content_extraction:
+                metadata = doc.content_extraction.get("metadata", {})
+        else:
+            evidence = evidence_processor.prepare_document_content(doc)
+            content = evidence.content
+            image_path = evidence.image_path
+            metadata = evidence.metadata
+
         extracted_data = await extractor.extract_trade_data(
-            content=evidence.content,
-            image_path=evidence.image_path,
+            content=content,
+            image_path=image_path,
         )
 
         extracted_payload = extracted_data.model_dump()
-        extracted_payload["evidence_metadata"] = evidence.metadata
+        extracted_payload["evidence_metadata"] = metadata
 
         updated_doc = db.update_document(
             doc_id,
             {
                 "status": "EXTRACTED",
-                "content": evidence.content,
+                "content": content,
                 "extracted_data": extracted_payload,
-                "processing_warnings": evidence.metadata.get("warnings", []),
+                "processing_warnings": metadata.get("warnings", []) if isinstance(metadata, dict) else [],
             },
         )
 
