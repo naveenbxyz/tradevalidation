@@ -118,6 +118,7 @@ class Document(BaseModel):
     extracted_data: Optional[Dict[str, Any]] = None
     validation_result: Optional[Dict[str, Any]] = None
     processing_warnings: List[str] = Field(default_factory=list)
+    content_extraction: Optional[Dict[str, Any]] = None
 
 
 class TextInput(BaseModel):

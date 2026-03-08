@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
-import { FileUp, LineChart, CheckSquare, Settings, LayoutDashboard } from 'lucide-react';
+import { FileUp, LineChart, CheckSquare, Settings, LayoutDashboard, Workflow } from 'lucide-react';
 import { DocumentUpload } from '@/pages/DocumentUpload';
+import { Pipeline } from '@/pages/Pipeline';
 import { Trades } from '@/pages/Trades';
 import { ValidationDashboard } from '@/pages/ValidationDashboard';
 import { MatchingRules } from '@/pages/MatchingRules';
@@ -22,6 +23,9 @@ function App() {
                   <NavItem to="/" icon={<LayoutDashboard className="h-4 w-4" />}>
                     Dashboard
                   </NavItem>
+                  <NavItem to="/pipeline" icon={<Workflow className="h-4 w-4" />}>
+                    Pipeline
+                  </NavItem>
                   <NavItem to="/upload" icon={<FileUp className="h-4 w-4" />}>
                     Evidence
                   </NavItem>
@@ -40,6 +44,7 @@ function App() {
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <Routes>
             <Route path="/" element={<ValidationDashboard />} />
+            <Route path="/pipeline" element={<Pipeline />} />
             <Route path="/upload" element={<DocumentUpload />} />
             <Route path="/trades" element={<Trades />} />
             <Route path="/rules" element={<MatchingRules />} />

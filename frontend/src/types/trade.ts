@@ -86,6 +86,28 @@ export interface FieldComparison {
   rule_applied?: string;
 }
 
+export interface ContentExtractionResult {
+  raw_text: string;
+  email_subject?: string;
+  email_sender?: string;
+  email_body?: string;
+  attachments: Array<{
+    name: string;
+    source_type: string;
+    text_length: number;
+  }>;
+  images: Array<{
+    name: string;
+    source_type: string;
+    text_length: number;
+  }>;
+  metadata: Record<string, unknown>;
+  warnings: string[];
+}
+
+export type PipelineStepKey = 'upload' | 'content_extraction' | 'entity_extraction' | 'comparison' | 'review';
+export type PipelineStepStatus = 'pending' | 'processing' | 'complete' | 'error';
+
 export interface Document {
   id: string;
   filename: string;
@@ -95,6 +117,7 @@ export interface Document {
   extracted_data?: ExtractedTrade;
   validation_result?: ValidationResult;
   processing_warnings?: string[];
+  content_extraction?: ContentExtractionResult;
 }
 
 export interface OCRWord {
