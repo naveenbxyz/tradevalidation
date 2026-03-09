@@ -7,7 +7,7 @@ from typing import Dict, List
 
 import aiofiles
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app.config import settings
@@ -48,7 +48,7 @@ async def chat_with_context(request: ChatRequest):
 
     context_summary = build_context_summary(request.context)
 
-    system_prompt = f"""You are an assistant for a TRS trade validation system.
+    system_prompt = f"""You are an assistant for a markets trade validation system.
 
 Use only the validation context below:
 {context_summary}
@@ -57,9 +57,14 @@ Keep responses concise and factual.
 If information is missing in context, say so clearly."""
 
     try:
+        import httpx
+        http_client = None
+        if not settings.verify_ssl:
+            http_client = httpx.Client(verify=False)
         client = OpenAI(
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url if settings.openai_base_url else None,
+            http_client=http_client,
         )
 
         response = client.chat.completions.create(
@@ -377,21 +382,35 @@ async def extract_document(doc_id: str):
         if doc.content and doc.content.strip():
             content = doc.content
             image_path = None
+            image_paths: List[str] = []
             metadata: Dict[str, object] = {}
             # For image or msg files, try to find the image path
             if doc.file_path and doc.file_type == "image":
                 image_path = doc.file_path
-            elif doc.content_extraction:
+                image_paths = [doc.file_path]
+            elif doc.file_type == "msg" and doc.file_path:
+                # Collect all image attachments from the attachment directory
+                att_dir = os.path.join(os.path.dirname(doc.file_path), f"{doc.id}_attachments")
+                if os.path.isdir(att_dir):
+                    for fname in sorted(os.listdir(att_dir)):
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp"}:
+                            image_paths.append(os.path.join(att_dir, fname))
+                    if image_paths:
+                        image_path = image_paths[0]
+            if doc.content_extraction:
                 metadata = doc.content_extraction.get("metadata", {})
         else:
             evidence = evidence_processor.prepare_document_content(doc)
             content = evidence.content
             image_path = evidence.image_path
+            image_paths = evidence.image_paths
             metadata = evidence.metadata
 
         extracted_data = await extractor.extract_trade_data(
             content=content,
             image_path=image_path,
+            image_paths=image_paths,
         )
 
         extracted_payload = extracted_data.model_dump()
@@ -460,6 +479,63 @@ async def get_document_viewer_data(doc_id: str, page: int = 0):
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to process document: {exc}") from exc
+
+
+@router.get("/documents/{doc_id}/attachments")
+async def get_document_attachments(doc_id: str):
+    """List attachments extracted from a .msg document."""
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not doc.file_path:
+        return []
+
+    attachment_dir = os.path.join(os.path.dirname(doc.file_path), f"{doc_id}_attachments")
+    if not os.path.isdir(attachment_dir):
+        return []
+
+    attachments = []
+    for filename in sorted(os.listdir(attachment_dir)):
+        file_path = os.path.join(attachment_dir, filename)
+        if not os.path.isfile(file_path):
+            continue
+        ext = os.path.splitext(filename)[1].lower()
+        is_image = ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
+        # Strip the index prefix (e.g. "0_filename.docx" -> "filename.docx")
+        display_name = filename.split("_", 1)[1] if "_" in filename else filename
+        attachments.append({
+            "filename": filename,
+            "display_name": display_name,
+            "is_image": is_image,
+            "file_type": "image" if is_image else ext.lstrip("."),
+            "size": os.path.getsize(file_path),
+        })
+
+    return attachments
+
+
+@router.get("/documents/{doc_id}/attachments/{filename}")
+async def serve_attachment(doc_id: str, filename: str):
+    """Serve an attachment file for download or viewing."""
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not doc.file_path:
+        raise HTTPException(status_code=400, detail="Document has no file path")
+
+    attachment_dir = os.path.join(os.path.dirname(doc.file_path), f"{doc_id}_attachments")
+    file_path = os.path.join(attachment_dir, filename)
+
+    # Prevent path traversal
+    if not os.path.realpath(file_path).startswith(os.path.realpath(attachment_dir)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return FileResponse(file_path, filename=filename)
 
 
 @router.post("/documents/{doc_id}/validate", response_model=Document)

@@ -114,7 +114,7 @@ export function Trades() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">TRS Source-of-Truth Trades</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Source-of-Truth Trades</h1>
           <p className="text-muted-foreground">Manage simulated trade records used for automated validation.</p>
         </div>
         <div className="flex space-x-2">

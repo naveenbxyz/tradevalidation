@@ -6,13 +6,15 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # API Settings
-    app_name: str = "TRS Trade Validation API"
+    app_name: str = "Markets Trade Validator API"
     debug: bool = True
 
     # LLM Settings
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     llm_model: str = "gpt-4.1-mini"
+    verify_ssl: bool = True
+    stream: bool = False
 
     # Data & file paths
     database_path: str = "../data/database.json"

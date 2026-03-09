@@ -17,7 +17,7 @@ function App() {
               <div className="flex items-center space-x-8">
                 <div className="flex items-center space-x-2">
                   <CheckSquare className="h-6 w-6 text-primary" />
-                  <span className="font-bold text-lg">TRS Validator</span>
+                  <span className="font-bold text-lg">Markets Trade Validator</span>
                 </div>
                 <div className="flex items-center space-x-1">
                   <NavItem to="/" icon={<LayoutDashboard className="h-4 w-4" />}>
@@ -30,7 +30,7 @@ function App() {
                     Evidence
                   </NavItem>
                   <NavItem to="/trades" icon={<LineChart className="h-4 w-4" />}>
-                    TRS Trades
+                    Trades
                   </NavItem>
                   <NavItem to="/rules" icon={<Settings className="h-4 w-4" />}>
                     Matching Rules

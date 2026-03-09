@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pypdf import PdfReader
 
@@ -31,6 +32,7 @@ class NormalizedEvidence:
 
     content: str
     image_path: Optional[str]
+    image_paths: List[str]  # All image paths for multi-image LLM input
     metadata: Dict[str, Any]
 
 
@@ -56,6 +58,7 @@ class EvidenceProcessor:
             return NormalizedEvidence(
                 content=content,
                 image_path=None,
+                image_paths=[],
                 metadata={"source_type": "text", "has_content": bool(content), "warnings": []},
             )
 
@@ -89,10 +92,12 @@ class EvidenceProcessor:
 
         attachment_text_parts: List[str] = []
         attachment_metadata: List[Dict[str, Any]] = []
-        first_image_path: Optional[str] = None
+        all_image_paths: List[str] = []
 
         attachment_dir = os.path.join(os.path.dirname(file_path), f"{doc_id}_attachments")
         os.makedirs(attachment_dir, exist_ok=True)
+
+        seen_hashes: Set[str] = set()
 
         for index, attachment in enumerate(message.attachments):
             filename = self._safe_attachment_name(
@@ -110,6 +115,13 @@ class EvidenceProcessor:
                 warnings.append(f"Ignored unsupported attachment type: {filename}")
                 continue
 
+            # Deduplicate attachments by content hash
+            content_hash = hashlib.sha256(attachment.data).hexdigest()
+            if content_hash in seen_hashes:
+                warnings.append(f"Skipped duplicate attachment: {filename}")
+                continue
+            seen_hashes.add(content_hash)
+
             attachment_path = os.path.join(attachment_dir, f"{index}_{filename}")
 
             try:
@@ -126,8 +138,8 @@ class EvidenceProcessor:
             if extracted_text.strip():
                 attachment_text_parts.append(f"[Attachment: {filename}]\n{extracted_text.strip()}")
 
-            if item_meta.get("source_type") == "image" and not first_image_path:
-                first_image_path = attachment_path
+            if item_meta.get("source_type") == "image":
+                all_image_paths.append(attachment_path)
 
         email_header_block = "\n".join(
             line for line in [
@@ -148,7 +160,8 @@ class EvidenceProcessor:
 
         return NormalizedEvidence(
             content=combined_content,
-            image_path=first_image_path,
+            image_path=all_image_paths[0] if all_image_paths else None,
+            image_paths=all_image_paths,
             metadata={
                 "source_type": "msg",
                 "subject": subject,
@@ -203,6 +216,7 @@ class EvidenceProcessor:
         return NormalizedEvidence(
             content=content,
             image_path=file_path,
+            image_paths=[file_path],
             metadata={
                 "source_type": "image",
                 "ocr_used": True,
@@ -230,6 +244,7 @@ class EvidenceProcessor:
         return NormalizedEvidence(
             content=content,
             image_path=None,
+            image_paths=[],
             metadata={
                 "source_type": "pdf",
                 "pdf_text_length": len(extracted_text),
@@ -266,6 +281,7 @@ class EvidenceProcessor:
         return NormalizedEvidence(
             content=content,
             image_path=None,
+            image_paths=[],
             metadata={"source_type": "docx", "warnings": warnings},
         )
 

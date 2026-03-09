@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Eye, File, FileText, FolderSearch, Image, Loader2, Mail, Upload } from 'lucide-react';
+import { Download, Eye, File, FileText, FolderSearch, Image, Loader2, Mail, Upload, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,6 +10,14 @@ import type { Document, ExtractedTrade } from '@/types/trade';
 
 const API_BASE = 'http://localhost:8000';
 
+interface Attachment {
+  filename: string;
+  display_name: string;
+  is_image: boolean;
+  file_type: string;
+  size: number;
+}
+
 export function DocumentUpload() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [textInput, setTextInput] = useState('');
@@ -17,6 +25,8 @@ export function DocumentUpload() {
   const [isUploading, setIsUploading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [viewingDocumentId, setViewingDocumentId] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
 
   useEffect(() => {
     fetchDocuments();
@@ -26,10 +36,29 @@ export function DocumentUpload() {
     try {
       const response = await fetch(`${API_BASE}/api/documents`);
       if (response.ok) {
-        setDocuments(await response.json());
+        const docs: Document[] = await response.json();
+        setDocuments(docs);
+        // Fetch attachments for msg documents
+        for (const doc of docs) {
+          if (doc.file_type === 'msg') {
+            fetchAttachments(doc.id);
+          }
+        }
       }
     } catch (error) {
       console.error('Failed to fetch documents:', error);
+    }
+  };
+
+  const fetchAttachments = async (docId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/${docId}/attachments`);
+      if (response.ok) {
+        const data: Attachment[] = await response.json();
+        setAttachments((prev) => ({ ...prev, [docId]: data }));
+      }
+    } catch (error) {
+      console.error('Failed to fetch attachments:', error);
     }
   };
 
@@ -205,7 +234,7 @@ export function DocumentUpload() {
               >
                 <Upload className="mx-auto h-12 w-12 text-muted-foreground" />
                 <p className="mt-4 text-lg font-medium">Drop files here or click to upload</p>
-                <p className="mt-2 text-sm text-muted-foreground">TRS confirmation evidence in email or attachments</p>
+                <p className="mt-2 text-sm text-muted-foreground">Trade confirmation evidence in email or attachments</p>
                 <input
                   type="file"
                   className="hidden"
@@ -230,7 +259,7 @@ export function DocumentUpload() {
             </CardHeader>
             <CardContent className="space-y-4">
               <Textarea
-                placeholder="Paste TRS trade evidence text here..."
+                placeholder="Paste trade evidence text here..."
                 className="min-h-[220px] font-mono"
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
@@ -281,6 +310,55 @@ export function DocumentUpload() {
                     ))}
                   </div>
                 )}
+
+                {attachments[doc.id] && attachments[doc.id].length > 0 && (
+                  <div className="border rounded p-3 space-y-2">
+                    <p className="text-sm font-medium text-muted-foreground">
+                      Attachments ({attachments[doc.id].length})
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                      {attachments[doc.id].map((att) => (
+                        <div
+                          key={att.filename}
+                          className="flex items-center justify-between border rounded px-3 py-2 text-sm"
+                        >
+                          <div className="flex items-center space-x-2 min-w-0">
+                            {att.is_image ? (
+                              <Image className="h-4 w-4 flex-shrink-0 text-blue-500" />
+                            ) : (
+                              <FileText className="h-4 w-4 flex-shrink-0 text-gray-500" />
+                            )}
+                            <span className="truncate">{att.display_name}</span>
+                          </div>
+                          <div className="flex items-center space-x-1 ml-2 flex-shrink-0">
+                            {att.is_image && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0"
+                                onClick={() =>
+                                  setPreviewImage({
+                                    url: `${API_BASE}/api/documents/${doc.id}/attachments/${att.filename}`,
+                                    name: att.display_name,
+                                  })
+                                }
+                              >
+                                <Eye className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                            <a
+                              href={`${API_BASE}/api/documents/${doc.id}/attachments/${att.filename}`}
+                              download={att.display_name}
+                              className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-accent"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
             {documents.length === 0 && (
@@ -308,6 +386,30 @@ export function DocumentUpload() {
 
       {viewingDocumentId && (
         <DocumentViewer documentId={viewingDocumentId} onClose={() => setViewingDocumentId(null)} />
+      )}
+
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div
+            className="relative bg-white rounded-lg shadow-xl max-w-4xl max-h-[90vh] overflow-auto p-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-2 px-2">
+              <span className="text-sm font-medium truncate">{previewImage.name}</span>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setPreviewImage(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <img
+              src={previewImage.url}
+              alt={previewImage.name}
+              className="max-w-full max-h-[80vh] object-contain rounded"
+            />
+          </div>
+        </div>
       )}
     </div>
   );

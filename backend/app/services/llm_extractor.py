@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
 from openai import OpenAI
 
 from app.config import settings
@@ -16,9 +17,13 @@ class LLMExtractor:
     def __init__(self):
         self.client = None
         if settings.openai_api_key:
+            http_client = None
+            if not settings.verify_ssl:
+                http_client = httpx.Client(verify=False)
             self.client = OpenAI(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url if settings.openai_base_url else None,
+                http_client=http_client,
             )
         self.schema = self._load_schema()
 
@@ -66,6 +71,7 @@ class LLMExtractor:
         self,
         content: str,
         image_path: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
         trade_type: Optional[str] = None,
     ) -> ExtractedTrade:
         _ = trade_type
@@ -76,15 +82,18 @@ class LLMExtractor:
         prompt = self._build_extraction_prompt()
         messages = [{"role": "user", "content": []}]
 
-        if image_path and os.path.exists(image_path):
-            base64_image = self._encode_image(image_path)
-            media_type = self._get_image_media_type(image_path)
-            messages[0]["content"].append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{media_type};base64,{base64_image}"},
-                }
-            )
+        # Send ALL images to the LLM for visual analysis
+        images_to_send = image_paths or ([image_path] if image_path else [])
+        for img_path in images_to_send:
+            if img_path and os.path.exists(img_path):
+                base64_image = self._encode_image(img_path)
+                media_type = self._get_image_media_type(img_path)
+                messages[0]["content"].append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{base64_image}"},
+                    }
+                )
 
         messages[0]["content"].append(
             {
@@ -94,14 +103,27 @@ class LLMExtractor:
         )
 
         try:
-            response = self.client.chat.completions.create(
-                model=settings.llm_model,
-                messages=messages,
-                max_tokens=1800,
-                response_format={"type": "json_object"},
-            )
-
-            result_text = response.choices[0].message.content
+            if settings.stream:
+                stream = self.client.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=messages,
+                    max_tokens=4096,
+                    response_format={"type": "json_object"},
+                    stream=True,
+                )
+                chunks = []
+                for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        chunks.append(chunk.choices[0].delta.content)
+                result_text = "".join(chunks)
+            else:
+                response = self.client.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=messages,
+                    max_tokens=4096,
+                    response_format={"type": "json_object"},
+                )
+                result_text = response.choices[0].message.content
             parsed = json.loads(result_text)
             normalized_fields = self._normalize_fields(parsed.get("fields", {}))
 
@@ -126,13 +148,29 @@ class LLMExtractor:
             )
 
         return (
-            "You are a trade confirmation extraction engine for Total Return Swap (TRS) trades.\n"
-            "Extract only fields from the provided schema.\n"
-            "Use YYYY-MM-DD for dates.\n"
-            "Use numeric values for numeric fields with no separators or currency signs.\n"
-            "Use PartyA/PartyB exactly for payer/receiver fields.\n"
-            "If a field is missing, set value to null and confidence to 0.0.\n"
-            "Infer provenance source_type as one of email_body, attachment, ocr, unknown.\n"
+            "You are a trade confirmation extraction engine for Total Return Swap (TRS) trades.\n\n"
+            "You are given evidence that may include:\n"
+            "- Email body text\n"
+            "- Attached document content (DOCX termsheets, PDFs)\n"
+            "- Images of trade confirmations or termsheets (provided as attached images)\n"
+            "- OCR text extracted from images\n\n"
+            "Carefully analyze ALL provided content — text, documents, and images — to extract "
+            "trade details. Use your understanding of TRS trades to identify relevant entities "
+            "even if the field names in the evidence don't exactly match the schema.\n\n"
+            "The following schema fields are expected. Extract these fields where present, "
+            "but also extract any additional TRS-relevant fields you identify in the evidence "
+            "(e.g., spread, financing rate, reset frequency, day count, payment dates, "
+            "reference obligation details, etc.). Include additional fields under the same "
+            "JSON structure with descriptive snake_case names.\n\n"
+            "Formatting rules:\n"
+            "- Use YYYY-MM-DD for dates.\n"
+            "- Use numeric values for numeric fields with no separators or currency signs.\n"
+            "- Use PartyA/PartyB exactly for payer/receiver fields.\n"
+            "- If a field is missing, set value to null and confidence to 0.0.\n"
+            "- Set confidence based on how clearly the value appears in the evidence "
+            "(1.0 = explicitly stated, 0.7-0.9 = inferred with high certainty, "
+            "<0.7 = uncertain or partially visible).\n"
+            "- Infer provenance source_type as one of: email_body, attachment, ocr, unknown.\n\n"
             "Return only valid JSON in this shape:\n"
             "{\n"
             "  \"trade_type\": \"TRS\",\n"
@@ -149,12 +187,15 @@ class LLMExtractor:
             "    }\n"
             "  }\n"
             "}\n\n"
-            "Schema fields:\n"
+            "Expected schema fields:\n"
             + "\n".join(field_lines)
         )
 
     def _normalize_fields(self, fields: Dict[str, Any]) -> Dict[str, ExtractedField]:
         normalized: Dict[str, ExtractedField] = {}
+        schema_field_names = {f["name"] for f in self.schema.get("fields", [])}
+
+        # First, populate all expected schema fields
         for field in self.schema.get("fields", []):
             field_name = field["name"]
             value_block = fields.get(field_name, {}) or {}
@@ -163,6 +204,18 @@ class LLMExtractor:
                 confidence=float(value_block.get("confidence", 0.0) or 0.0),
                 provenance=value_block.get("provenance"),
             )
+
+        # Then, include any additional fields the LLM discovered
+        for field_name, value_block in fields.items():
+            if field_name not in schema_field_names:
+                value_block = value_block or {}
+                if isinstance(value_block, dict):
+                    normalized[field_name] = ExtractedField(
+                        value=value_block.get("value"),
+                        confidence=float(value_block.get("confidence", 0.0) or 0.0),
+                        provenance=value_block.get("provenance"),
+                    )
+
         return normalized
 
     def _mock_extraction(self, content: str) -> ExtractedTrade:
