@@ -88,24 +88,43 @@ class LLMExtractor:
         except OSError:
             return 85
 
-    async def extract_trade_data(
+    def _split_into_chunks(self, content: str, max_chars: int, overlap: int = 500) -> List[str]:
+        """Split content into chunks that fit within max_chars, with overlap for context."""
+        if len(content) <= max_chars:
+            return [content]
+
+        chunks: List[str] = []
+        start = 0
+        while start < len(content):
+            end = start + max_chars
+
+            # Try to break at a paragraph or line boundary to avoid splitting mid-sentence
+            if end < len(content):
+                # Look for the last paragraph break within the chunk
+                last_para = content.rfind("\n\n", start + max_chars // 2, end)
+                if last_para > start:
+                    end = last_para
+                else:
+                    # Fall back to line break
+                    last_line = content.rfind("\n", start + max_chars // 2, end)
+                    if last_line > start:
+                        end = last_line
+
+            chunks.append(content[start:end].strip())
+
+            # Next chunk starts with overlap for context continuity
+            start = end - overlap if end < len(content) else end
+
+        return chunks
+
+    def _build_image_content_blocks(
         self,
-        content: str,
-        image_path: Optional[str] = None,
-        image_paths: Optional[List[str]] = None,
-        trade_type: Optional[str] = None,
-    ) -> ExtractedTrade:
-        _ = trade_type
-
-        if not self.client:
-            logger.info("No LLM client configured — using mock extraction")
-            return self._mock_extraction(content)
-
-        prompt = self._build_extraction_prompt()
-        messages = [{"role": "user", "content": []}]
-
-        # --- Build image payloads and log details ---
+        image_paths: Optional[List[str]],
+        image_path: Optional[str],
+    ) -> tuple:
+        """Encode images and return (content_blocks, images_attached, total_bytes, total_tokens_est)."""
         images_to_send = image_paths or ([image_path] if image_path else [])
+        content_blocks: List[Dict[str, Any]] = []
         images_attached = 0
         total_image_bytes = 0
         total_image_tokens_est = 0
@@ -115,7 +134,7 @@ class LLMExtractor:
                 file_size = os.path.getsize(img_path)
                 base64_image = self._encode_image(img_path)
                 media_type = self._get_image_media_type(img_path)
-                messages[0]["content"].append(
+                content_blocks.append(
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{media_type};base64,{base64_image}"},
@@ -134,13 +153,90 @@ class LLMExtractor:
                     img_tokens,
                 )
 
-        full_text = f"{prompt}\n\nEvidence content:\n{content}"
-        messages[0]["content"].append({"type": "text", "text": full_text})
+        return content_blocks, images_attached, total_image_bytes, total_image_tokens_est
 
-        prompt_chars = len(prompt)
-        content_chars = len(content)
-        text_tokens_est = self._estimate_token_count(full_text)
-        total_tokens_est = text_tokens_est + total_image_tokens_est
+    def _call_llm(self, messages: List[Dict]) -> str:
+        """Send a single LLM request and return the response text."""
+        if settings.stream:
+            stream = self.client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+                stream=True,
+            )
+            chunks = []
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    chunks.append(chunk.choices[0].delta.content)
+            result_text = "".join(chunks)
+            logger.info("  Streaming response: %d chars", len(result_text))
+        else:
+            response = self.client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+            )
+            result_text = response.choices[0].message.content
+            if hasattr(response, "usage") and response.usage:
+                logger.info(
+                    "  LLM usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens,
+                    response.usage.total_tokens,
+                )
+            logger.info("  Response: %d chars", len(result_text))
+        return result_text
+
+    def _merge_extracted_fields(
+        self,
+        all_fields: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Merge fields from multiple chunk extractions — highest confidence wins per field."""
+        merged: Dict[str, Any] = {}
+        for fields in all_fields:
+            for field_name, field_data in fields.items():
+                if not isinstance(field_data, dict):
+                    continue
+                value = field_data.get("value")
+                confidence = float(field_data.get("confidence", 0.0) or 0.0)
+
+                # Skip null/empty values
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+
+                existing = merged.get(field_name)
+                if not existing or confidence > float(existing.get("confidence", 0.0) or 0.0):
+                    merged[field_name] = field_data
+
+        return merged
+
+    async def extract_trade_data(
+        self,
+        content: str,
+        image_path: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
+        trade_type: Optional[str] = None,
+    ) -> ExtractedTrade:
+        _ = trade_type
+
+        if not self.client:
+            logger.info("No LLM client configured — using mock extraction")
+            return self._mock_extraction(content)
+
+        prompt = self._build_extraction_prompt()
+        max_chars = settings.max_content_chars
+        original_content_len = len(content)
+
+        # Build image blocks once (shared across chunks or sent only with first chunk)
+        image_blocks, images_attached, total_image_bytes, total_image_tokens_est = (
+            self._build_image_content_blocks(image_paths, image_path)
+        )
+
+        # Split content into chunks if needed
+        chunks = self._split_into_chunks(content, max_chars)
+        num_chunks = len(chunks)
 
         logger.info("=" * 60)
         logger.info("LLM EXTRACTION REQUEST SUMMARY")
@@ -150,55 +246,63 @@ class LLMExtractor:
         logger.info("  Stream:           %s", settings.stream)
         logger.info("  Max tokens (out): %d", 4096)
         logger.info("-" * 60)
-        logger.info("  Prompt length:    %d chars", prompt_chars)
-        logger.info("  Content length:   %d chars", content_chars)
-        logger.info("  Text tokens est:  ~%d", text_tokens_est)
+        logger.info("  Prompt length:    %d chars", len(prompt))
+        logger.info("  Content length:   %d chars", original_content_len)
+        logger.info("  Max chunk size:   %d chars", max_chars)
+        logger.info("  Chunks:           %d", num_chunks)
+        for i, chunk in enumerate(chunks):
+            logger.info("    Chunk %d/%d: %d chars (~%d tokens)", i + 1, num_chunks, len(chunk), self._estimate_token_count(chunk))
         logger.info("  Images attached:  %d", images_attached)
         logger.info("  Image bytes:      %d total", total_image_bytes)
         logger.info("  Image tokens est: ~%d", total_image_tokens_est)
-        logger.info("  TOTAL tokens est: ~%d (input)", total_tokens_est)
         logger.info("=" * 60)
 
         try:
-            if settings.stream:
-                logger.info("Sending streaming LLM request...")
-                stream = self.client.chat.completions.create(
-                    model=settings.llm_model,
-                    messages=messages,
-                    max_tokens=4096,
-                    response_format={"type": "json_object"},
-                    stream=True,
-                )
-                chunks = []
-                for chunk in stream:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        chunks.append(chunk.choices[0].delta.content)
-                result_text = "".join(chunks)
-                logger.info("Streaming response received: %d chars", len(result_text))
-            else:
-                logger.info("Sending non-streaming LLM request...")
-                response = self.client.chat.completions.create(
-                    model=settings.llm_model,
-                    messages=messages,
-                    max_tokens=4096,
-                    response_format={"type": "json_object"},
-                )
-                result_text = response.choices[0].message.content
-                # Log usage if available
-                if hasattr(response, "usage") and response.usage:
-                    logger.info(
-                        "LLM usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
-                        response.usage.prompt_tokens,
-                        response.usage.completion_tokens,
-                        response.usage.total_tokens,
+            all_chunk_fields: List[Dict[str, Any]] = []
+
+            for chunk_idx, chunk_content in enumerate(chunks):
+                chunk_label = f"Chunk {chunk_idx + 1}/{num_chunks}"
+                logger.info("%s: sending %d chars to LLM...", chunk_label, len(chunk_content))
+
+                messages: List[Dict[str, Any]] = [{"role": "user", "content": []}]
+
+                # Include images only with the first chunk to avoid redundant token cost
+                if chunk_idx == 0 and image_blocks:
+                    messages[0]["content"].extend(image_blocks)
+
+                chunk_prompt = prompt
+                if num_chunks > 1:
+                    chunk_prompt += (
+                        f"\n\nNOTE: This is chunk {chunk_idx + 1} of {num_chunks} from a large document. "
+                        "Extract all trade fields you can find in this chunk. "
+                        "Fields not present in this chunk should have value null and confidence 0.0."
                     )
-                logger.info("Response received: %d chars", len(result_text))
 
-            parsed = json.loads(result_text)
-            fields_count = len(parsed.get("fields", {}))
-            logger.info("Parsed %d fields from LLM response", fields_count)
+                full_text = f"{chunk_prompt}\n\nEvidence content:\n{chunk_content}"
+                messages[0]["content"].append({"type": "text", "text": full_text})
 
-            normalized_fields = self._normalize_fields(parsed.get("fields", {}))
+                result_text = self._call_llm(messages)
+                parsed = json.loads(result_text)
+                chunk_fields = parsed.get("fields", {})
+                non_null = sum(
+                    1 for f in chunk_fields.values()
+                    if isinstance(f, dict) and f.get("value") is not None
+                )
+                logger.info("%s: extracted %d fields (%d non-null)", chunk_label, len(chunk_fields), non_null)
+                all_chunk_fields.append(chunk_fields)
+
+            # Merge results across chunks — highest confidence wins
+            if num_chunks == 1:
+                merged_fields = all_chunk_fields[0]
+            else:
+                merged_fields = self._merge_extracted_fields(all_chunk_fields)
+                logger.info(
+                    "Merged %d chunks → %d fields with values",
+                    num_chunks,
+                    sum(1 for f in merged_fields.values() if isinstance(f, dict) and f.get("value") is not None),
+                )
+
+            normalized_fields = self._normalize_fields(merged_fields)
 
             return ExtractedTrade(
                 trade_type="TRS",
@@ -207,12 +311,10 @@ class LLMExtractor:
                 raw_text=content,
             )
         except Exception as exc:
-            # Log the full error with type for debugging 400s, auth errors, etc.
             logger.error("=" * 60)
             logger.error("LLM EXTRACTION FAILED")
             logger.error("  Error type:  %s", type(exc).__name__)
             logger.error("  Error:       %s", exc)
-            # If it's an API error, try to log the response body
             if hasattr(exc, "response"):
                 try:
                     err_body = exc.response.text if hasattr(exc.response, "text") else str(exc.response)

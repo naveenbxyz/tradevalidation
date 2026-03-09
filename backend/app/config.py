@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Controls
     max_file_size: int = 20 * 1024 * 1024  # 20MB
     auto_pass_threshold: float = 0.85
+    max_content_chars: int = 50000  # Max chars of text content sent to LLM (~12.5K tokens)
 
     class Config:
         env_file = ".env"

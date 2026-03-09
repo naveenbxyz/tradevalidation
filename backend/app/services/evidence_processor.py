@@ -96,6 +96,7 @@ class EvidenceProcessor:
         attachment_text_parts: List[str] = []
         attachment_metadata: List[Dict[str, Any]] = []
         all_image_paths: List[str] = []
+        docx_included = False  # Only include text from the first DOCX
 
         attachment_dir = os.path.join(os.path.dirname(file_path), f"{doc_id}_attachments")
         os.makedirs(attachment_dir, exist_ok=True)
@@ -138,11 +139,27 @@ class EvidenceProcessor:
             item_meta["attachment_name"] = filename
             attachment_metadata.append(item_meta)
 
-            if extracted_text.strip():
-                attachment_text_parts.append(f"[Attachment: {filename}]\n{extracted_text.strip()}")
+            is_image = item_meta.get("source_type") == "image"
+            is_docx = item_meta.get("source_type") == "docx"
 
-            if item_meta.get("source_type") == "image":
+            if is_image:
                 all_image_paths.append(attachment_path)
+                # Skip OCR text for images — they will be sent visually to the LLM.
+                logger.info(
+                    "  Skipping OCR text for image %s (will be sent as base64 to LLM)",
+                    filename,
+                )
+            elif is_docx and docx_included:
+                # Only use the first DOCX termsheet; skip duplicates
+                warnings.append(f"Skipped additional DOCX attachment: {filename}")
+                logger.info(
+                    "  Skipping additional DOCX %s (first DOCX already included)",
+                    filename,
+                )
+            elif extracted_text.strip():
+                attachment_text_parts.append(f"[Attachment: {filename}]\n{extracted_text.strip()}")
+                if is_docx:
+                    docx_included = True
 
         email_header_block = "\n".join(
             line for line in [
