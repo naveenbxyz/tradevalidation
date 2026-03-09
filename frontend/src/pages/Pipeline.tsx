@@ -73,6 +73,11 @@ export function Pipeline() {
   const [extractedTrade, setExtractedTrade] = useState<ExtractedTrade | null>(null);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
 
+  // LLM streaming progress state
+  const [llmStatus, setLlmStatus] = useState('');
+  const [llmTokens, setLlmTokens] = useState('');
+  const [llmStats, setLlmStats] = useState('');
+
   // Upload state
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -128,6 +133,9 @@ export function Pipeline() {
     setOverrideTradeId('');
     setCheckerSubmitted(false);
     setStepErrors({});
+    setLlmStatus('');
+    setLlmTokens('');
+    setLlmStats('');
   };
 
   // -- Upload handlers --
@@ -239,24 +247,82 @@ export function Pipeline() {
       return;
     }
 
-    // Step 3: Entity Extraction
+    // Step 3: Entity Extraction (with SSE streaming progress)
     updateStepStatus('entity_extraction', 'processing');
     expandStep('entity_extraction');
+    setLlmStatus('Starting LLM extraction...');
+    setLlmTokens('');
+    setLlmStats('');
     try {
-      const response = await fetch(`${API_BASE}/api/documents/${docId}/extract`, { method: 'POST' });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || 'Entity extraction failed');
+      const extractionResult = await new Promise<Document>((resolve, reject) => {
+        fetch(`${API_BASE}/api/documents/${docId}/extract-stream`, { method: 'POST' })
+          .then(async (response) => {
+            if (!response.ok) {
+              const err = await response.json();
+              reject(new Error(err.detail || 'Entity extraction failed'));
+              return;
+            }
+
+            const reader = response.body?.getReader();
+            if (!reader) {
+              reject(new Error('No response stream'));
+              return;
+            }
+
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                  const event = JSON.parse(line.slice(6));
+
+                  if (event.type === 'status') {
+                    setLlmStatus(event.message);
+                  } else if (event.type === 'token') {
+                    setLlmTokens((prev) => prev + event.text);
+                    setLlmStats(`${event.total_chars.toLocaleString()} chars | ${event.elapsed}s`);
+                  } else if (event.type === 'llm_complete') {
+                    setLlmStatus('Parsing LLM response...');
+                    setLlmStats(
+                      `${event.total_chars.toLocaleString()} chars in ${event.elapsed}s (${event.tokens_per_sec} tok/s)`
+                    );
+                  } else if (event.type === 'done') {
+                    resolve(event.document as Document);
+                    return;
+                  } else if (event.type === 'error') {
+                    reject(new Error(event.message));
+                    return;
+                  }
+                } catch {
+                  // ignore parse errors for incomplete chunks
+                }
+              }
+            }
+
+            reject(new Error('Stream ended without result'));
+          })
+          .catch(reject);
+      });
+
+      setDocument(extractionResult);
+      if (extractionResult.extracted_data) {
+        setExtractedTrade(extractionResult.extracted_data);
       }
-      const updatedDoc: Document = await response.json();
-      setDocument(updatedDoc);
-      if (updatedDoc.extracted_data) {
-        setExtractedTrade(updatedDoc.extracted_data);
-      }
+      setLlmStatus('');
       updateStepStatus('entity_extraction', 'complete');
     } catch (error) {
       updateStepStatus('entity_extraction', 'error');
       setStepErrors((prev) => ({ ...prev, entity_extraction: String(error) }));
+      setLlmStatus('');
       setIsRunning(false);
       return;
     }
@@ -656,9 +722,21 @@ export function Pipeline() {
             error={stepErrors.entity_extraction}
           >
             {stepStatuses.entity_extraction === 'processing' && (
-              <div className="flex items-center gap-3 py-6 justify-center text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                <span>Extracting structured trade fields via LLM...</span>
+              <div className="space-y-3 py-4">
+                <div className="flex items-center gap-3 text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                  <span className="text-sm font-medium">{llmStatus || 'Extracting structured trade fields via LLM...'}</span>
+                </div>
+                {llmStats && (
+                  <div className="text-xs text-muted-foreground px-8">{llmStats}</div>
+                )}
+                {llmTokens && (
+                  <div className="max-h-48 overflow-y-auto rounded-md border bg-gray-950 p-3 mx-2">
+                    <pre className="text-xs whitespace-pre-wrap font-mono text-green-400">
+                      {llmTokens}
+                    </pre>
+                  </div>
+                )}
               </div>
             )}
             {extractedTrade && (

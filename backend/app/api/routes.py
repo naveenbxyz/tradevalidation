@@ -1,14 +1,21 @@
+import asyncio
 import csv
 import io
+import json
+import logging
 import os
+import queue
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
 import aiofiles
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.db import db
@@ -431,6 +438,131 @@ async def extract_document(doc_id: str):
     except Exception as exc:
         db.update_document(doc_id, {"status": "ERROR", "processing_warnings": [str(exc)]})
         raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}") from exc
+
+
+@router.post("/documents/{doc_id}/extract-stream")
+async def extract_document_stream(doc_id: str):
+    """Entity extraction with SSE progress streaming for the UI."""
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    db.update_document(doc_id, {"status": "PROCESSING"})
+
+    # Prepare content (same logic as /extract)
+    if doc.content and doc.content.strip():
+        content = doc.content
+        image_path = None
+        image_paths: List[str] = []
+        metadata: Dict[str, object] = {}
+        if doc.file_path and doc.file_type == "image":
+            image_path = doc.file_path
+            image_paths = [doc.file_path]
+        elif doc.file_type == "msg" and doc.file_path:
+            att_dir = os.path.join(os.path.dirname(doc.file_path), f"{doc.id}_attachments")
+            if os.path.isdir(att_dir):
+                for fname in sorted(os.listdir(att_dir)):
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp"}:
+                        image_paths.append(os.path.join(att_dir, fname))
+                if image_paths:
+                    image_path = image_paths[0]
+        if doc.content_extraction:
+            metadata = doc.content_extraction.get("metadata", {})
+    else:
+        evidence = evidence_processor.prepare_document_content(doc)
+        content = evidence.content
+        image_path = evidence.image_path
+        image_paths = evidence.image_paths
+        metadata = evidence.metadata
+
+    # Thread-safe queue for progress events
+    progress_queue: queue.Queue = queue.Queue()
+
+    def on_progress(event: dict):
+        progress_queue.put(event)
+
+    def run_extraction():
+        """Run extraction in a thread (OpenAI client is synchronous)."""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                extractor.extract_trade_data(
+                    content=content,
+                    image_path=image_path,
+                    image_paths=image_paths,
+                    on_progress=on_progress,
+                )
+            )
+            progress_queue.put({"type": "result", "data": result})
+        except Exception as exc:
+            logger.error("Streaming extraction failed: %s", exc)
+            progress_queue.put({"type": "error", "message": str(exc)})
+        finally:
+            progress_queue.put(None)  # sentinel
+            loop.close()
+
+    async def event_generator():
+        # Start extraction in background thread
+        thread = threading.Thread(target=run_extraction, daemon=True)
+        thread.start()
+
+        while True:
+            # Poll the queue without blocking the event loop
+            try:
+                event = progress_queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
+
+            if event is None:
+                # Done
+                break
+
+            if event["type"] == "result":
+                # Save to DB and send final result
+                extracted_data = event["data"]
+                extracted_payload = extracted_data.model_dump()
+                extracted_payload["evidence_metadata"] = metadata
+
+                db.update_document(
+                    doc_id,
+                    {
+                        "status": "EXTRACTED",
+                        "content": content,
+                        "extracted_data": extracted_payload,
+                        "processing_warnings": metadata.get("warnings", []) if isinstance(metadata, dict) else [],
+                    },
+                )
+
+                updated_doc = db.get_document(doc_id)
+                yield f"data: {json.dumps({'type': 'done', 'document': updated_doc.model_dump() if updated_doc else None})}\n\n"
+
+            elif event["type"] == "error":
+                db.update_document(doc_id, {"status": "ERROR", "processing_warnings": [event["message"]]})
+                yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+
+            elif event["type"] == "token":
+                yield f"data: {json.dumps({'type': 'token', 'text': event['text'], 'total_chars': event['total_chars'], 'elapsed': event['elapsed']})}\n\n"
+
+            elif event["type"] == "status":
+                yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
+
+            elif event["type"] == "complete":
+                yield f"data: {json.dumps({'type': 'llm_complete', 'total_chars': event['total_chars'], 'elapsed': event['elapsed'], 'tokens_per_sec': event['tokens_per_sec']})}\n\n"
+
+        thread.join(timeout=5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/documents/{doc_id}/viewer")

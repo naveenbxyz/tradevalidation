@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 from openai import OpenAI
@@ -292,12 +292,25 @@ class LLMExtractor:
             logger.debug("  %sRaw response (first 500): %s", fallback_label, text[:500])
         return text
 
-    def _call_local_llm(self, system_prompt: str, user_content: Any) -> str:
-        """Send a simplified request to the local on-device LLM.
+    def _call_local_llm(
+        self,
+        system_prompt: str,
+        user_content: Any,
+        on_progress: Optional[Callable[[dict], None]] = None,
+    ) -> str:
+        """Send a streaming request to the local on-device LLM.
 
+        Streams tokens and logs them in real-time so you can see progress.
         Local models typically only need: model, messages (role + content string).
-        No response_format, no streaming, no image blocks.
+        No response_format, no image blocks.
+
+        on_progress(event) is called with dicts like:
+          {"type": "status", "message": "..."}
+          {"type": "token", "text": "...", "total_chars": N, "elapsed": T}
+          {"type": "complete", "total_chars": N, "elapsed": T, "tokens_per_sec": F}
         """
+        import time
+
         # Flatten multipart content to plain text if needed
         if isinstance(user_content, list):
             text_parts = []
@@ -311,7 +324,12 @@ class LLMExtractor:
         logger.info("  [local] Sending to %s (%s)", settings.local_llm_base_url, settings.local_llm_model)
         logger.info("  [local] System prompt: %d chars, User content: %d chars", len(system_prompt), len(user_text))
 
-        response = self.local_client.chat.completions.create(
+        if on_progress:
+            on_progress({"type": "status", "message": f"Sending {len(user_text):,} chars to local LLM ({settings.local_llm_model})..."})
+
+        start_time = time.time()
+
+        stream = self.local_client.chat.completions.create(
             model=settings.local_llm_model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -319,27 +337,102 @@ class LLMExtractor:
             ],
             temperature=settings.local_llm_temperature,
             max_tokens=settings.local_llm_max_tokens,
+            stream=True,
         )
 
-        text = response.choices[0].message.content or ""
-        if hasattr(response, "usage") and response.usage:
-            logger.info(
-                "  [local] Usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
-                response.usage.total_tokens,
-            )
-        logger.info("  [local] Response: %d chars", len(text))
+        parts: list[str] = []
+        events = 0
+        first_token_time = None
+        chars_since_log = 0
+        LOG_INTERVAL = 200  # log a progress line every N chars
+
+        print("  [local] Streaming: ", end="", flush=True)
+
+        for chunk in stream:
+            events += 1
+            choices = self._safe_get(chunk, "choices", []) or []
+            if not choices:
+                continue
+
+            delta = self._safe_get(choices[0], "delta")
+            if not delta:
+                continue
+
+            token_text = self._safe_get(delta, "content")
+            if not isinstance(token_text, str) or not token_text:
+                continue
+
+            if first_token_time is None:
+                first_token_time = time.time()
+                ttft = first_token_time - start_time
+                logger.info("  [local] First token received after %.1fs", ttft)
+                if on_progress:
+                    on_progress({"type": "status", "message": f"First token after {ttft:.1f}s — generating..."})
+
+            parts.append(token_text)
+            chars_since_log += len(token_text)
+
+            # Print dots to stdout for real-time progress
+            print(".", end="", flush=True)
+
+            # Send token to progress callback
+            if on_progress:
+                total_chars = sum(len(p) for p in parts)
+                elapsed = time.time() - start_time
+                on_progress({
+                    "type": "token",
+                    "text": token_text,
+                    "total_chars": total_chars,
+                    "elapsed": round(elapsed, 1),
+                })
+
+            # Periodic progress log
+            if chars_since_log >= LOG_INTERVAL:
+                total_chars = sum(len(p) for p in parts)
+                elapsed = time.time() - start_time
+                logger.info(
+                    "  [local] ... %d chars received (%.1fs elapsed, %d events)",
+                    total_chars, elapsed, events,
+                )
+                chars_since_log = 0
+
+        print(flush=True)  # newline after dots
+
+        text = "".join(parts)
+        elapsed = time.time() - start_time
+        tokens_per_sec = len(parts) / elapsed if elapsed > 0 else 0
+
+        logger.info("  [local] Stream complete: %d events, %d chars in %.1fs (%.1f tokens/s)",
+                     events, len(text), elapsed, tokens_per_sec)
+
+        if on_progress:
+            on_progress({
+                "type": "complete",
+                "total_chars": len(text),
+                "elapsed": round(elapsed, 1),
+                "tokens_per_sec": round(tokens_per_sec, 1),
+            })
+
         if text:
-            logger.debug("  [local] Raw response (first 500): %s", text[:500])
+            logger.info("  [local] Response start: %s", text[:300].replace("\n", "\\n"))
+            if len(text) > 300:
+                logger.info("  [local] Response end:   %s", text[-200:].replace("\n", "\\n"))
+        else:
+            logger.warning("  [local] Streaming returned EMPTY response")
+
         return text
 
-    def _call_llm(self, system_prompt: str, user_content: Any) -> str:
+    def _call_llm(
+        self,
+        system_prompt: str,
+        user_content: Any,
+        on_progress: Optional[Callable[[dict], None]] = None,
+    ) -> str:
         """Send an LLM request — routes to local or central LLM based on config."""
 
         # Use local on-device LLM if enabled
         if settings.local_llm_enabled and self.local_client:
-            return self._call_local_llm(system_prompt, user_content)
+            return self._call_local_llm(system_prompt, user_content, on_progress=on_progress)
 
         # Central LLM with automatic response_format fallback
         body = self._build_request_body(system_prompt, user_content, include_response_format=True)
@@ -386,6 +479,7 @@ class LLMExtractor:
         image_path: Optional[str] = None,
         image_paths: Optional[List[str]] = None,
         trade_type: Optional[str] = None,
+        on_progress: Optional[Callable[[dict], None]] = None,
     ) -> ExtractedTrade:
         _ = trade_type
 
@@ -459,6 +553,9 @@ class LLMExtractor:
                 chunk_label = f"Chunk {chunk_idx + 1}/{num_chunks}"
                 logger.info("%s: sending %d chars to LLM...", chunk_label, len(chunk_content))
 
+                if on_progress:
+                    on_progress({"type": "status", "message": f"Processing {chunk_label} ({len(chunk_content):,} chars)..."})
+
                 # Build user content
                 chunk_note = ""
                 if num_chunks > 1:
@@ -478,7 +575,7 @@ class LLMExtractor:
                     # Plain text — matches the SSI extraction pattern
                     user_content = user_text
 
-                result_text = self._call_llm(system_prompt, user_content)
+                result_text = self._call_llm(system_prompt, user_content, on_progress=on_progress)
 
                 # Strip markdown code fences if present (some LLMs wrap JSON in ```json...```)
                 cleaned = result_text.strip()
