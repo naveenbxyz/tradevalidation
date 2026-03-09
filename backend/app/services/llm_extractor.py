@@ -341,15 +341,12 @@ class LLMExtractor:
         )
 
         parts: list[str] = []
-        events = 0
+        token_count = 0
         first_token_time = None
-        chars_since_log = 0
-        LOG_INTERVAL = 200  # log a progress line every N chars
-
-        print("  [local] Streaming: ", end="", flush=True)
+        chars_since_update = 0
+        PROGRESS_INTERVAL = 500  # UI update every N chars
 
         for chunk in stream:
-            events += 1
             choices = self._safe_get(chunk, "choices", []) or []
             if not choices:
                 continue
@@ -365,45 +362,35 @@ class LLMExtractor:
             if first_token_time is None:
                 first_token_time = time.time()
                 ttft = first_token_time - start_time
-                logger.info("  [local] First token received after %.1fs", ttft)
+                logger.info("  [local] First token after %.1fs", ttft)
                 if on_progress:
-                    on_progress({"type": "status", "message": f"First token after {ttft:.1f}s — generating..."})
+                    on_progress({"type": "status", "message": f"LLM responding (first token after {ttft:.1f}s)..."})
 
             parts.append(token_text)
-            chars_since_log += len(token_text)
+            token_count += 1
+            chars_since_update += len(token_text)
 
-            # Print dots to stdout for real-time progress
-            print(".", end="", flush=True)
-
-            # Send token to progress callback
-            if on_progress:
+            # Periodic progress update (not per-token)
+            if on_progress and chars_since_update >= PROGRESS_INTERVAL:
                 total_chars = sum(len(p) for p in parts)
                 elapsed = time.time() - start_time
+                tps = token_count / elapsed if elapsed > 0 else 0
                 on_progress({
-                    "type": "token",
-                    "text": token_text,
+                    "type": "progress",
                     "total_chars": total_chars,
                     "elapsed": round(elapsed, 1),
+                    "tokens_per_sec": round(tps, 1),
                 })
-
-            # Periodic progress log
-            if chars_since_log >= LOG_INTERVAL:
-                total_chars = sum(len(p) for p in parts)
-                elapsed = time.time() - start_time
-                logger.info(
-                    "  [local] ... %d chars received (%.1fs elapsed, %d events)",
-                    total_chars, elapsed, events,
-                )
-                chars_since_log = 0
-
-        print(flush=True)  # newline after dots
+                chars_since_update = 0
 
         text = "".join(parts)
         elapsed = time.time() - start_time
-        tokens_per_sec = len(parts) / elapsed if elapsed > 0 else 0
+        tokens_per_sec = token_count / elapsed if elapsed > 0 else 0
 
-        logger.info("  [local] Stream complete: %d events, %d chars in %.1fs (%.1f tokens/s)",
-                     events, len(text), elapsed, tokens_per_sec)
+        logger.info(
+            "  [local] Done: %d tokens, %d chars in %.1fs (%.1f tok/s)",
+            token_count, len(text), elapsed, tokens_per_sec,
+        )
 
         if on_progress:
             on_progress({
@@ -413,12 +400,8 @@ class LLMExtractor:
                 "tokens_per_sec": round(tokens_per_sec, 1),
             })
 
-        if text:
-            logger.info("  [local] Response start: %s", text[:300].replace("\n", "\\n"))
-            if len(text) > 300:
-                logger.info("  [local] Response end:   %s", text[-200:].replace("\n", "\\n"))
-        else:
-            logger.warning("  [local] Streaming returned EMPTY response")
+        if not text:
+            logger.warning("  [local] Empty response")
 
         return text
 
@@ -513,37 +496,16 @@ class LLMExtractor:
         num_chunks = len(chunks)
 
         using_local = settings.local_llm_enabled and self.local_client is not None
+        model_name = settings.local_llm_model if using_local else settings.llm_model
 
-        logger.info("=" * 60)
-        logger.info("LLM EXTRACTION REQUEST SUMMARY")
-        logger.info("-" * 60)
-        if using_local:
-            logger.info("  *** USING LOCAL ON-DEVICE LLM ***")
-            logger.info("  Model:            %s", settings.local_llm_model)
-            logger.info("  Base URL:         %s", settings.local_llm_base_url)
-            logger.info("  Temperature:      %s", settings.local_llm_temperature)
-            logger.info("  Stream:           no (local)")
-            logger.info("  Timeout:          %ds", settings.local_llm_timeout)
-        else:
-            logger.info("  Model:            %s", settings.llm_model)
-            logger.info("  Base URL:         %s", settings.openai_base_url or "(default)")
-            logger.info("  Temperature:      %s", settings.llm_temperature)
-            logger.info("  Stream:           %s", settings.stream)
-            logger.info("  Timeout:          %ds", settings.llm_timeout)
-        logger.info("  Send images:      %s", settings.llm_send_images)
-        logger.info("  Max tokens (out): %d", 4096)
-        logger.info("-" * 60)
-        logger.info("  System prompt:    %d chars", len(system_prompt))
-        logger.info("  Content length:   %d chars", original_content_len)
-        logger.info("  Max chunk size:   %d chars", max_chars)
-        logger.info("  Chunks:           %d", num_chunks)
-        for i, chunk in enumerate(chunks):
-            logger.info("    Chunk %d/%d: %d chars (~%d tokens)", i + 1, num_chunks, len(chunk), self._estimate_token_count(chunk))
-        if settings.llm_send_images:
-            logger.info("  Images attached:  %d", images_attached)
-            logger.info("  Image bytes:      %d total", total_image_bytes)
-            logger.info("  Image tokens est: ~%d", total_image_tokens_est)
-        logger.info("=" * 60)
+        logger.info(
+            "LLM extraction: model=%s content=%d chars, %d chunk(s), images=%s%s",
+            model_name,
+            original_content_len,
+            num_chunks,
+            images_attached if settings.llm_send_images else "off",
+            " [LOCAL]" if using_local else "",
+        )
 
         try:
             all_chunk_fields: List[Dict[str, Any]] = []

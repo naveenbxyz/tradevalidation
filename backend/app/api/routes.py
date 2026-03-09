@@ -543,14 +543,14 @@ async def extract_document_stream(doc_id: str):
                 db.update_document(doc_id, {"status": "ERROR", "processing_warnings": [event["message"]]})
                 yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
 
-            elif event["type"] == "token":
-                yield f"data: {json.dumps({'type': 'token', 'text': event['text'], 'total_chars': event['total_chars'], 'elapsed': event['elapsed']})}\n\n"
-
             elif event["type"] == "status":
                 yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
 
+            elif event["type"] == "progress":
+                yield f"data: {json.dumps({'type': 'progress', 'total_chars': event['total_chars'], 'elapsed': event['elapsed'], 'tokens_per_sec': event['tokens_per_sec']})}\n\n"
+
             elif event["type"] == "complete":
-                yield f"data: {json.dumps({'type': 'llm_complete', 'total_chars': event['total_chars'], 'elapsed': event['elapsed'], 'tokens_per_sec': event['tokens_per_sec']})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'total_chars': event['total_chars'], 'elapsed': event['elapsed'], 'tokens_per_sec': event['tokens_per_sec']})}\n\n"
 
         thread.join(timeout=5)
 

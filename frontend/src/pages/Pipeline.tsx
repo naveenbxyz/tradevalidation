@@ -75,8 +75,8 @@ export function Pipeline() {
 
   // LLM streaming progress state
   const [llmStatus, setLlmStatus] = useState('');
-  const [llmTokens, setLlmTokens] = useState('');
-  const [llmStats, setLlmStats] = useState('');
+  const [llmProgress, setLlmProgress] = useState('');
+  const [llmLog, setLlmLog] = useState<string[]>([]);
 
   // Upload state
   const [isDragging, setIsDragging] = useState(false);
@@ -134,8 +134,8 @@ export function Pipeline() {
     setCheckerSubmitted(false);
     setStepErrors({});
     setLlmStatus('');
-    setLlmTokens('');
-    setLlmStats('');
+    setLlmProgress('');
+    setLlmLog([]);
   };
 
   // -- Upload handlers --
@@ -251,8 +251,8 @@ export function Pipeline() {
     updateStepStatus('entity_extraction', 'processing');
     expandStep('entity_extraction');
     setLlmStatus('Starting LLM extraction...');
-    setLlmTokens('');
-    setLlmStats('');
+    setLlmProgress('');
+    setLlmLog([]);
     try {
       const extractionResult = await new Promise<Document>((resolve, reject) => {
         fetch(`${API_BASE}/api/documents/${docId}/extract-stream`, { method: 'POST' })
@@ -287,14 +287,16 @@ export function Pipeline() {
 
                   if (event.type === 'status') {
                     setLlmStatus(event.message);
-                  } else if (event.type === 'token') {
-                    setLlmTokens((prev) => prev + event.text);
-                    setLlmStats(`${event.total_chars.toLocaleString()} chars | ${event.elapsed}s`);
-                  } else if (event.type === 'llm_complete') {
-                    setLlmStatus('Parsing LLM response...');
-                    setLlmStats(
-                      `${event.total_chars.toLocaleString()} chars in ${event.elapsed}s (${event.tokens_per_sec} tok/s)`
+                    setLlmLog((prev) => [...prev, event.message]);
+                  } else if (event.type === 'progress') {
+                    setLlmProgress(
+                      `${event.total_chars.toLocaleString()} chars generated | ${event.elapsed}s | ${event.tokens_per_sec} tok/s`
                     );
+                  } else if (event.type === 'complete') {
+                    setLlmStatus('Parsing LLM response...');
+                    const summary = `Done: ${event.total_chars.toLocaleString()} chars in ${event.elapsed}s (${event.tokens_per_sec} tok/s)`;
+                    setLlmProgress(summary);
+                    setLlmLog((prev) => [...prev, summary]);
                   } else if (event.type === 'done') {
                     resolve(event.document as Document);
                     return;
@@ -723,18 +725,25 @@ export function Pipeline() {
           >
             {stepStatuses.entity_extraction === 'processing' && (
               <div className="space-y-3 py-4">
-                <div className="flex items-center gap-3 text-muted-foreground">
-                  <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                  <span className="text-sm font-medium">{llmStatus || 'Extracting structured trade fields via LLM...'}</span>
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-5 w-5 animate-spin text-blue-600 shrink-0" />
+                  <span className="text-sm font-medium text-blue-700">{llmStatus || 'Extracting structured trade fields via LLM...'}</span>
                 </div>
-                {llmStats && (
-                  <div className="text-xs text-muted-foreground px-8">{llmStats}</div>
+                {llmProgress && (
+                  <div className="text-xs text-muted-foreground font-mono pl-8">{llmProgress}</div>
                 )}
-                {llmTokens && (
-                  <div className="max-h-48 overflow-y-auto rounded-md border bg-gray-950 p-3 mx-2">
-                    <pre className="text-xs whitespace-pre-wrap font-mono text-green-400">
-                      {llmTokens}
-                    </pre>
+                {llmLog.length > 0 && (
+                  <div className="max-h-32 overflow-y-auto rounded-md border bg-muted/50 p-3 mx-2">
+                    {llmLog.map((entry, i) => (
+                      <div
+                        key={i}
+                        className="text-xs text-muted-foreground font-mono py-0.5"
+                        ref={i === llmLog.length - 1 ? (el) => el?.scrollIntoView({ behavior: 'smooth', block: 'end' }) : undefined}
+                      >
+                        <span className="text-muted-foreground/50 mr-2">{i + 1}.</span>
+                        {entry}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
