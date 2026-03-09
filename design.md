@@ -105,3 +105,60 @@ Per field:
 3. Add async extraction/validation workers and retry policy.
 4. Extend TRS schema (financing leg, spread, reset frequency, valuation terms).
 5. Add immutable audit/event history for checker actions.
+
+## 9. Accuracy Strategy: Prompt Engineering vs Model Training
+
+### Context
+
+Users raised whether model training (fine-tuning) is needed if per-field extraction accuracy remains low. The strategic position is to **exhaust prompt/context engineering first** and defer model training given the regulatory cost (SR 11-7 model governance, purpose-trained model approvals, ongoing monitoring burden).
+
+### Why defer training
+
+- Regulatory approval for purpose-trained models is expensive and slow (months).
+- Insufficient labeled data today — need hundreds of examples per counterparty format.
+- Frontier models are improving rapidly; context windows growing (128K → 1M+). Standard termsheet formats will likely be handled well by general models within 12-18 months.
+- The current pipeline is exactly what generates the training data over time.
+
+### Where training may eventually help
+
+- Tail-end counterparty formats (low volume, unusual layouts).
+- Firm-specific entity normalization (internal IDs, desk shorthand, booking entity names).
+- Confidence calibration (prompted confidence is unreliable; trained models can be statistically meaningful).
+- Consistency (same input → same output reliably).
+
+### Accuracy improvement roadmap (prompt engineering first)
+
+| Phase | Action | Expected lift |
+|-------|--------|---------------|
+| Now | Ship with schema-driven prompt + context engineering | Baseline |
+| +1 quarter | Golden examples library → few-shot prompts per counterparty format | 5-15% |
+| +2 quarters | Per-counterparty prompt templates for top 10 formats | Incremental |
+| +3 quarters | Evaluate plateau → decide whether to start training conversation | Decision gate |
+
+### TODO: Build the feedback data asset (do now, use later)
+
+The data captured below is valuable regardless of whether we ever train — it drives prompt improvement today and keeps the training option open.
+
+- [ ] **Capture checker corrections** — for every extraction, log the diff between LLM output and human-corrected values:
+  ```
+  {
+    document_id, counterparty_format, input_content_hash,
+    llm_extracted_fields, checker_corrections,
+    final_validated_fields, model_used, prompt_version, accuracy_score
+  }
+  ```
+- [ ] **Track accuracy over time** — per field, per counterparty format, per model version. Surface in a dashboard so we can see where the model is improving and where it's stuck.
+- [ ] **Golden examples library** — monthly review of worst-performing formats. Promote 2-3 corrected examples per format into a curated set used for few-shot prompting.
+- [ ] **Per-counterparty prompt templates** — for top N counterparties by volume, craft format-specific extraction prompts that account for their layout conventions.
+- [ ] **Retrieval-augmented few-shot** — dynamically pull the most similar previously-validated trade as a reference example into the prompt at extraction time.
+- [ ] **Prompt versioning** — tag each extraction with the prompt version used, so we can A/B compare prompt changes against accuracy metrics.
+
+### Decision gate for model training
+
+Trigger the training conversation when:
+1. Prompt engineering + few-shot examples have been optimized for top formats.
+2. Accuracy is plateauing below target on specific counterparty formats.
+3. Sufficient labeled data exists (100+ corrected examples per target format).
+4. Business case justifies the regulatory approval investment.
+
+Until then: build the data, improve the prompts, and let the models catch up.
