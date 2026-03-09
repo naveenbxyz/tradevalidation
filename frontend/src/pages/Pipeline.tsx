@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle,
@@ -91,6 +91,14 @@ export function Pipeline() {
 
   // Step error messages
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
+
+  // Auto-scroll the LLM log container (not the page)
+  const llmLogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (llmLogRef.current) {
+      llmLogRef.current.scrollTop = llmLogRef.current.scrollHeight;
+    }
+  }, [llmLog]);
 
   const stepRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -250,7 +258,7 @@ export function Pipeline() {
 
     // Step 3: Entity Extraction (with SSE streaming progress)
     updateStepStatus('entity_extraction', 'processing');
-    expandStep('entity_extraction');
+    expandStep('entity_extraction', false);
     setLlmStatus('Starting LLM extraction...');
     setLlmProgress('');
     setLlmLog([]);
@@ -734,13 +742,9 @@ export function Pipeline() {
                   <div className="text-xs text-muted-foreground font-mono pl-8">{llmProgress}</div>
                 )}
                 {llmLog.length > 0 && (
-                  <div className="max-h-32 overflow-y-auto rounded-md border bg-muted/50 p-3 mx-2">
+                  <div ref={llmLogRef} className="max-h-32 overflow-y-auto rounded-md border bg-muted/50 p-3 mx-2">
                     {llmLog.map((entry, i) => (
-                      <div
-                        key={i}
-                        className="text-xs text-muted-foreground font-mono py-0.5"
-                        ref={i === llmLog.length - 1 ? (el) => el?.scrollIntoView({ behavior: 'smooth', block: 'end' }) : undefined}
-                      >
+                      <div key={i} className="text-xs text-muted-foreground font-mono py-0.5">
                         <span className="text-muted-foreground/50 mr-2">{i + 1}.</span>
                         {entry}
                       </div>
