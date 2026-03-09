@@ -58,9 +58,10 @@ If information is missing in context, say so clearly."""
 
     try:
         import httpx
-        http_client = None
-        if not settings.verify_ssl:
-            http_client = httpx.Client(verify=False)
+        http_client = httpx.Client(
+            verify=settings.verify_ssl,
+            timeout=settings.llm_timeout,
+        )
         client = OpenAI(
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url if settings.openai_base_url else None,
@@ -74,7 +75,7 @@ If information is missing in context, say so clearly."""
                 {"role": "user", "content": request.message},
             ],
             max_tokens=500,
-            temperature=0.2,
+            temperature=settings.llm_temperature,
         )
 
         return ChatResponse(response=response.choices[0].message.content)

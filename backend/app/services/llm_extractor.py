@@ -20,13 +20,23 @@ class LLMExtractor:
     def __init__(self):
         self.client = None
         if settings.openai_api_key:
-            http_client = None
-            if not settings.verify_ssl:
-                http_client = httpx.Client(verify=False)
+            http_client = httpx.Client(
+                verify=settings.verify_ssl,
+                timeout=settings.llm_timeout,
+            )
             self.client = OpenAI(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url if settings.openai_base_url else None,
                 http_client=http_client,
+            )
+            logger.info(
+                "LLM client initialized: base_url=%s model=%s verify_ssl=%s timeout=%ds stream=%s send_images=%s",
+                settings.openai_base_url or "(default)",
+                settings.llm_model,
+                settings.verify_ssl,
+                settings.llm_timeout,
+                settings.stream,
+                settings.llm_send_images,
             )
         self.schema = self._load_schema()
 
@@ -155,39 +165,86 @@ class LLMExtractor:
 
         return content_blocks, images_attached, total_image_bytes, total_image_tokens_est
 
-    def _call_llm(self, messages: List[Dict]) -> str:
-        """Send a single LLM request and return the response text."""
+    @staticmethod
+    def _is_response_format_error(exc: Exception) -> bool:
+        """Detect if the LLM rejected the response_format parameter."""
+        text = str(exc).lower()
+        return "response_format" in text and any(
+            kw in text for kw in (
+                "unsupported", "invalid", "not supported", "unknown",
+                "extra inputs are not permitted", "unexpected keyword",
+            )
+        )
+
+    def _build_request_body(
+        self,
+        system_prompt: str,
+        user_content: Any,
+        include_response_format: bool = True,
+    ) -> Dict[str, Any]:
+        """Build the request body matching the SSI extraction pattern."""
+        body: Dict[str, Any] = {
+            "model": settings.llm_model,
+            "temperature": settings.llm_temperature,
+            "max_tokens": 4096,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+        }
+        if include_response_format:
+            body["response_format"] = {"type": "json_object"}
         if settings.stream:
-            stream = self.client.chat.completions.create(
-                model=settings.llm_model,
-                messages=messages,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-                stream=True,
+            body["stream"] = True
+        return body
+
+    def _send_request(self, body: Dict[str, Any], fallback_label: str = "") -> str:
+        """Send request with streaming/non-streaming support."""
+        is_stream = body.pop("stream", False)
+
+        if is_stream:
+            result = self.client.chat.completions.create(**body, stream=True)
+            parts: List[str] = []
+            for chunk in result:
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = getattr(choices[0], "delta", None)
+                    content = getattr(delta, "content", None) if delta else None
+                    if isinstance(content, str) and content:
+                        parts.append(content)
+            text = "".join(parts)
+            logger.info("  %sStreaming response: %d chars", fallback_label, len(text))
+            return text
+
+        response = self.client.chat.completions.create(**body)
+        text = response.choices[0].message.content
+        if hasattr(response, "usage") and response.usage:
+            logger.info(
+                "  %sLLM usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                fallback_label,
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens,
             )
-            chunks = []
-            for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    chunks.append(chunk.choices[0].delta.content)
-            result_text = "".join(chunks)
-            logger.info("  Streaming response: %d chars", len(result_text))
-        else:
-            response = self.client.chat.completions.create(
-                model=settings.llm_model,
-                messages=messages,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-            )
-            result_text = response.choices[0].message.content
-            if hasattr(response, "usage") and response.usage:
-                logger.info(
-                    "  LLM usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                    response.usage.total_tokens,
+        logger.info("  %sResponse: %d chars", fallback_label, len(text))
+        return text
+
+    def _call_llm(self, system_prompt: str, user_content: Any) -> str:
+        """Send an LLM request with automatic response_format fallback."""
+        body = self._build_request_body(system_prompt, user_content, include_response_format=True)
+
+        try:
+            return self._send_request(body)
+        except Exception as exc:
+            if self._is_response_format_error(exc):
+                logger.warning(
+                    "LLM rejected response_format; retrying without it: %s", exc
                 )
-            logger.info("  Response: %d chars", len(result_text))
-        return result_text
+                fallback_body = self._build_request_body(
+                    system_prompt, user_content, include_response_format=False
+                )
+                return self._send_request(fallback_body, fallback_label="[fallback] ")
+            raise
 
     def _merge_extracted_fields(
         self,
@@ -225,14 +282,26 @@ class LLMExtractor:
             logger.info("No LLM client configured — using mock extraction")
             return self._mock_extraction(content)
 
-        prompt = self._build_extraction_prompt()
+        system_prompt = self._build_extraction_prompt()
         max_chars = settings.max_content_chars
         original_content_len = len(content)
 
-        # Build image blocks once (shared across chunks or sent only with first chunk)
-        image_blocks, images_attached, total_image_bytes, total_image_tokens_est = (
-            self._build_image_content_blocks(image_paths, image_path)
-        )
+        # Only build image blocks if the LLM supports multipart image input
+        images_attached = 0
+        total_image_bytes = 0
+        total_image_tokens_est = 0
+        image_blocks: List[Dict[str, Any]] = []
+
+        if settings.llm_send_images:
+            image_blocks, images_attached, total_image_bytes, total_image_tokens_est = (
+                self._build_image_content_blocks(image_paths, image_path)
+            )
+        else:
+            img_count = len(image_paths or ([image_path] if image_path else []))
+            if img_count:
+                logger.info(
+                    "  Skipping %d image(s) — LLM_SEND_IMAGES=false (text-only mode)", img_count
+                )
 
         # Split content into chunks if needed
         chunks = self._split_into_chunks(content, max_chars)
@@ -243,47 +312,54 @@ class LLMExtractor:
         logger.info("-" * 60)
         logger.info("  Model:            %s", settings.llm_model)
         logger.info("  Base URL:         %s", settings.openai_base_url or "(default)")
+        logger.info("  Temperature:      %s", settings.llm_temperature)
         logger.info("  Stream:           %s", settings.stream)
+        logger.info("  Timeout:          %ds", settings.llm_timeout)
+        logger.info("  Send images:      %s", settings.llm_send_images)
         logger.info("  Max tokens (out): %d", 4096)
         logger.info("-" * 60)
-        logger.info("  Prompt length:    %d chars", len(prompt))
+        logger.info("  System prompt:    %d chars", len(system_prompt))
         logger.info("  Content length:   %d chars", original_content_len)
         logger.info("  Max chunk size:   %d chars", max_chars)
         logger.info("  Chunks:           %d", num_chunks)
         for i, chunk in enumerate(chunks):
             logger.info("    Chunk %d/%d: %d chars (~%d tokens)", i + 1, num_chunks, len(chunk), self._estimate_token_count(chunk))
-        logger.info("  Images attached:  %d", images_attached)
-        logger.info("  Image bytes:      %d total", total_image_bytes)
-        logger.info("  Image tokens est: ~%d", total_image_tokens_est)
+        if settings.llm_send_images:
+            logger.info("  Images attached:  %d", images_attached)
+            logger.info("  Image bytes:      %d total", total_image_bytes)
+            logger.info("  Image tokens est: ~%d", total_image_tokens_est)
         logger.info("=" * 60)
 
         try:
             all_chunk_fields: List[Dict[str, Any]] = []
+            last_parsed: Dict[str, Any] = {}
 
             for chunk_idx, chunk_content in enumerate(chunks):
                 chunk_label = f"Chunk {chunk_idx + 1}/{num_chunks}"
                 logger.info("%s: sending %d chars to LLM...", chunk_label, len(chunk_content))
 
-                messages: List[Dict[str, Any]] = [{"role": "user", "content": []}]
-
-                # Include images only with the first chunk to avoid redundant token cost
-                if chunk_idx == 0 and image_blocks:
-                    messages[0]["content"].extend(image_blocks)
-
-                chunk_prompt = prompt
+                # Build user content
+                chunk_note = ""
                 if num_chunks > 1:
-                    chunk_prompt += (
+                    chunk_note = (
                         f"\n\nNOTE: This is chunk {chunk_idx + 1} of {num_chunks} from a large document. "
                         "Extract all trade fields you can find in this chunk. "
                         "Fields not present in this chunk should have value null and confidence 0.0."
                     )
 
-                full_text = f"{chunk_prompt}\n\nEvidence content:\n{chunk_content}"
-                messages[0]["content"].append({"type": "text", "text": full_text})
+                user_text = f"Evidence content:{chunk_note}\n{chunk_content}"
 
-                result_text = self._call_llm(messages)
-                parsed = json.loads(result_text)
-                chunk_fields = parsed.get("fields", {})
+                # Use multipart content only if we have images for this chunk
+                if chunk_idx == 0 and image_blocks:
+                    # Multipart: images + text
+                    user_content: Any = list(image_blocks) + [{"type": "text", "text": user_text}]
+                else:
+                    # Plain text — matches the SSI extraction pattern
+                    user_content = user_text
+
+                result_text = self._call_llm(system_prompt, user_content)
+                last_parsed = json.loads(result_text)
+                chunk_fields = last_parsed.get("fields", {})
                 non_null = sum(
                     1 for f in chunk_fields.values()
                     if isinstance(f, dict) and f.get("value") is not None
@@ -306,7 +382,7 @@ class LLMExtractor:
 
             return ExtractedTrade(
                 trade_type="TRS",
-                schema_version=str(parsed.get("schema_version") or self.schema.get("version", "v1")),
+                schema_version=str(last_parsed.get("schema_version") or self.schema.get("version", "v1")),
                 fields=normalized_fields,
                 raw_text=content,
             )

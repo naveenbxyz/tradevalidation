@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4.1-mini"
     verify_ssl: bool = True
     stream: bool = False
+    llm_temperature: float = 0.0
+    llm_timeout: int = 120
+    llm_send_images: bool = False  # Set True only if your LLM supports multipart image_url
 
     # Data & file paths
     database_path: str = "../data/database.json"

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pypdf import PdfReader
 
+from app.config import settings
 from app.models import Document
 from . import vision_ocr
 
@@ -144,11 +145,20 @@ class EvidenceProcessor:
 
             if is_image:
                 all_image_paths.append(attachment_path)
-                # Skip OCR text for images — they will be sent visually to the LLM.
-                logger.info(
-                    "  Skipping OCR text for image %s (will be sent as base64 to LLM)",
-                    filename,
-                )
+                if settings.llm_send_images:
+                    # Images will be sent visually to the LLM — skip OCR text to avoid duplication
+                    logger.info(
+                        "  Skipping OCR text for image %s (will be sent as base64 to LLM)",
+                        filename,
+                    )
+                elif extracted_text.strip():
+                    # Images NOT sent visually — include OCR text so the LLM has this content
+                    attachment_text_parts.append(f"[Attachment: {filename} (OCR)]\n{extracted_text.strip()}")
+                    logger.info(
+                        "  Including OCR text for image %s (%d chars)",
+                        filename,
+                        len(extracted_text.strip()),
+                    )
             elif is_docx and docx_included:
                 # Only use the first DOCX termsheet; skip duplicates
                 warnings.append(f"Skipped additional DOCX attachment: {filename}")
