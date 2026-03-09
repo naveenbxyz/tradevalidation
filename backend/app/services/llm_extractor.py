@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 class LLMExtractor:
     def __init__(self):
         self.client = None
+        self.local_client = None
+
+        # Central / remote LLM client
         if settings.openai_api_key:
             http_client = httpx.Client(
                 verify=settings.verify_ssl,
@@ -38,6 +41,25 @@ class LLMExtractor:
                 settings.stream,
                 settings.llm_send_images,
             )
+
+        # Local on-device LLM client (e.g. Qwen3-8B-MLX via AI Inference Engine)
+        if settings.local_llm_enabled:
+            local_http_client = httpx.Client(
+                verify=False,
+                timeout=settings.local_llm_timeout,
+            )
+            self.local_client = OpenAI(
+                api_key="local",  # local engines typically don't need a real key
+                base_url=settings.local_llm_base_url,
+                http_client=local_http_client,
+            )
+            logger.info(
+                "Local LLM client initialized: base_url=%s model=%s timeout=%ds",
+                settings.local_llm_base_url,
+                settings.local_llm_model,
+                settings.local_llm_timeout,
+            )
+
         self.schema = self._load_schema()
 
     def _load_schema(self) -> Dict[str, Any]:
@@ -270,8 +292,56 @@ class LLMExtractor:
             logger.debug("  %sRaw response (first 500): %s", fallback_label, text[:500])
         return text
 
+    def _call_local_llm(self, system_prompt: str, user_content: Any) -> str:
+        """Send a simplified request to the local on-device LLM.
+
+        Local models typically only need: model, messages (role + content string).
+        No response_format, no streaming, no image blocks.
+        """
+        # Flatten multipart content to plain text if needed
+        if isinstance(user_content, list):
+            text_parts = []
+            for block in user_content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block["text"])
+            user_text = "\n".join(text_parts) if text_parts else str(user_content)
+        else:
+            user_text = str(user_content)
+
+        logger.info("  [local] Sending to %s (%s)", settings.local_llm_base_url, settings.local_llm_model)
+        logger.info("  [local] System prompt: %d chars, User content: %d chars", len(system_prompt), len(user_text))
+
+        response = self.local_client.chat.completions.create(
+            model=settings.local_llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=settings.local_llm_temperature,
+            max_tokens=settings.local_llm_max_tokens,
+        )
+
+        text = response.choices[0].message.content or ""
+        if hasattr(response, "usage") and response.usage:
+            logger.info(
+                "  [local] Usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens,
+            )
+        logger.info("  [local] Response: %d chars", len(text))
+        if text:
+            logger.debug("  [local] Raw response (first 500): %s", text[:500])
+        return text
+
     def _call_llm(self, system_prompt: str, user_content: Any) -> str:
-        """Send an LLM request with automatic response_format fallback."""
+        """Send an LLM request — routes to local or central LLM based on config."""
+
+        # Use local on-device LLM if enabled
+        if settings.local_llm_enabled and self.local_client:
+            return self._call_local_llm(system_prompt, user_content)
+
+        # Central LLM with automatic response_format fallback
         body = self._build_request_body(system_prompt, user_content, include_response_format=True)
 
         try:
@@ -319,7 +389,7 @@ class LLMExtractor:
     ) -> ExtractedTrade:
         _ = trade_type
 
-        if not self.client:
+        if not self.client and not self.local_client:
             logger.info("No LLM client configured — using mock extraction")
             return self._mock_extraction(content)
 
@@ -348,14 +418,24 @@ class LLMExtractor:
         chunks = self._split_into_chunks(content, max_chars)
         num_chunks = len(chunks)
 
+        using_local = settings.local_llm_enabled and self.local_client is not None
+
         logger.info("=" * 60)
         logger.info("LLM EXTRACTION REQUEST SUMMARY")
         logger.info("-" * 60)
-        logger.info("  Model:            %s", settings.llm_model)
-        logger.info("  Base URL:         %s", settings.openai_base_url or "(default)")
-        logger.info("  Temperature:      %s", settings.llm_temperature)
-        logger.info("  Stream:           %s", settings.stream)
-        logger.info("  Timeout:          %ds", settings.llm_timeout)
+        if using_local:
+            logger.info("  *** USING LOCAL ON-DEVICE LLM ***")
+            logger.info("  Model:            %s", settings.local_llm_model)
+            logger.info("  Base URL:         %s", settings.local_llm_base_url)
+            logger.info("  Temperature:      %s", settings.local_llm_temperature)
+            logger.info("  Stream:           no (local)")
+            logger.info("  Timeout:          %ds", settings.local_llm_timeout)
+        else:
+            logger.info("  Model:            %s", settings.llm_model)
+            logger.info("  Base URL:         %s", settings.openai_base_url or "(default)")
+            logger.info("  Temperature:      %s", settings.llm_temperature)
+            logger.info("  Stream:           %s", settings.stream)
+            logger.info("  Timeout:          %ds", settings.llm_timeout)
         logger.info("  Send images:      %s", settings.llm_send_images)
         logger.info("  Max tokens (out): %d", 4096)
         logger.info("-" * 60)

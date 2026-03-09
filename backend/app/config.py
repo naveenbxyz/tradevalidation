@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     ingest_scan_dir: str = "../data/inbox"
     trs_schema_path: str = "app/schema_configs/trs_schema.json"
 
+    # Local LLM (on-device inference engine, e.g. Qwen3-8B-MLX)
+    local_llm_enabled: bool = False
+    local_llm_base_url: str = "http://localhost:8080/v1"
+    local_llm_model: str = "qwen3-8b-mlx-4bit"
+    local_llm_timeout: int = 300  # local models can be slow
+    local_llm_temperature: float = 0.0
+    local_llm_max_tokens: int = 4096
+
     # Controls
     max_file_size: int = 20 * 1024 * 1024  # 20MB
     auto_pass_threshold: float = 0.85
