@@ -198,26 +198,65 @@ class LLMExtractor:
             body["stream"] = True
         return body
 
+    @staticmethod
+    def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
+        """Safely get an attribute from an object or dict."""
+        if isinstance(obj, dict):
+            return obj.get(attr, default)
+        return getattr(obj, attr, default)
+
+    def _collect_stream_text(self, stream: Any) -> str:
+        """Collect text from a streaming response, matching the SSI extraction pattern.
+
+        Handles both string and list content formats from different LLM providers.
+        """
+        parts: List[str] = []
+        events = 0
+
+        for chunk in stream:
+            events += 1
+            choices = self._safe_get(chunk, "choices", []) or []
+            if not choices:
+                continue
+
+            delta = self._safe_get(choices[0], "delta")
+            if not delta:
+                continue
+
+            content = self._safe_get(delta, "content")
+
+            # Handle string content (most common)
+            if isinstance(content, str) and content:
+                parts.append(content)
+            # Handle list content (some LLM providers return this)
+            elif isinstance(content, list):
+                for item in content:
+                    text_part = self._safe_get(item, "text") if isinstance(item, (dict,)) else None
+                    if isinstance(text_part, str):
+                        parts.append(text_part)
+                    elif isinstance(item, str):
+                        parts.append(item)
+
+        text = "".join(parts)
+        logger.info("  Stream collected: %d events, %d chars", events, len(text))
+        return text
+
     def _send_request(self, body: Dict[str, Any], fallback_label: str = "") -> str:
         """Send request with streaming/non-streaming support."""
         is_stream = body.pop("stream", False)
 
         if is_stream:
             result = self.client.chat.completions.create(**body, stream=True)
-            parts: List[str] = []
-            for chunk in result:
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = getattr(choices[0], "delta", None)
-                    content = getattr(delta, "content", None) if delta else None
-                    if isinstance(content, str) and content:
-                        parts.append(content)
-            text = "".join(parts)
+            text = self._collect_stream_text(result)
             logger.info("  %sStreaming response: %d chars", fallback_label, len(text))
+            if text:
+                logger.debug("  %sRaw response (first 500): %s", fallback_label, text[:500])
+            else:
+                logger.warning("  %sStreaming returned EMPTY response", fallback_label)
             return text
 
         response = self.client.chat.completions.create(**body)
-        text = response.choices[0].message.content
+        text = response.choices[0].message.content or ""
         if hasattr(response, "usage") and response.usage:
             logger.info(
                 "  %sLLM usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
@@ -227,6 +266,8 @@ class LLMExtractor:
                 response.usage.total_tokens,
             )
         logger.info("  %sResponse: %d chars", fallback_label, len(text))
+        if text:
+            logger.debug("  %sRaw response (first 500): %s", fallback_label, text[:500])
         return text
 
     def _call_llm(self, system_prompt: str, user_content: Any) -> str:
@@ -358,7 +399,32 @@ class LLMExtractor:
                     user_content = user_text
 
                 result_text = self._call_llm(system_prompt, user_content)
-                last_parsed = json.loads(result_text)
+
+                # Strip markdown code fences if present (some LLMs wrap JSON in ```json...```)
+                cleaned = result_text.strip()
+                if cleaned.startswith("```"):
+                    # Remove opening fence (```json or ```)
+                    first_newline = cleaned.index("\n") if "\n" in cleaned else 3
+                    cleaned = cleaned[first_newline + 1:]
+                    # Remove closing fence
+                    if cleaned.endswith("```"):
+                        cleaned = cleaned[:-3].strip()
+                    result_text = cleaned
+
+                if not result_text.strip():
+                    logger.error("%s: LLM returned empty response — skipping chunk", chunk_label)
+                    all_chunk_fields.append({})
+                    continue
+
+                try:
+                    last_parsed = json.loads(result_text)
+                except json.JSONDecodeError as jde:
+                    logger.error("%s: JSON decode failed: %s", chunk_label, jde)
+                    logger.error("  Raw response (first 1000 chars): %s", result_text[:1000])
+                    logger.error("  Raw response (last 200 chars):   %s", result_text[-200:])
+                    all_chunk_fields.append({})
+                    continue
+
                 chunk_fields = last_parsed.get("fields", {})
                 non_null = sum(
                     1 for f in chunk_fields.values()
