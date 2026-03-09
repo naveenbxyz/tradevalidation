@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -11,6 +12,8 @@ from openai import OpenAI
 
 from app.config import settings
 from app.models import ExtractedField, ExtractedTrade
+
+logger = logging.getLogger(__name__)
 
 
 class LLMExtractor:
@@ -67,6 +70,24 @@ class LLMExtractor:
         # Current scope is TRS only.
         return "TRS"
 
+    def _estimate_token_count(self, text: str) -> int:
+        """Rough token estimate: ~4 chars per token for English text."""
+        return len(text) // 4
+
+    def _estimate_image_tokens(self, image_path: str) -> int:
+        """Rough token estimate for an image based on file size.
+
+        OpenAI-compatible APIs typically budget ~85 tokens for low-detail
+        and up to ~765+ tokens for high-detail images (based on tile count).
+        We use file-size as a proxy since we don't control the detail param.
+        """
+        try:
+            size_bytes = os.path.getsize(image_path)
+            # Conservative: ~1 token per 100 bytes for base64-encoded images
+            return max(85, size_bytes // 100)
+        except OSError:
+            return 85
+
     async def extract_trade_data(
         self,
         content: str,
@@ -77,15 +98,21 @@ class LLMExtractor:
         _ = trade_type
 
         if not self.client:
+            logger.info("No LLM client configured — using mock extraction")
             return self._mock_extraction(content)
 
         prompt = self._build_extraction_prompt()
         messages = [{"role": "user", "content": []}]
 
-        # Send ALL images to the LLM for visual analysis
+        # --- Build image payloads and log details ---
         images_to_send = image_paths or ([image_path] if image_path else [])
+        images_attached = 0
+        total_image_bytes = 0
+        total_image_tokens_est = 0
+
         for img_path in images_to_send:
             if img_path and os.path.exists(img_path):
+                file_size = os.path.getsize(img_path)
                 base64_image = self._encode_image(img_path)
                 media_type = self._get_image_media_type(img_path)
                 messages[0]["content"].append(
@@ -94,16 +121,47 @@ class LLMExtractor:
                         "image_url": {"url": f"data:{media_type};base64,{base64_image}"},
                     }
                 )
+                img_tokens = self._estimate_image_tokens(img_path)
+                total_image_bytes += file_size
+                total_image_tokens_est += img_tokens
+                images_attached += 1
+                logger.info(
+                    "  Image %d: %s | size=%d bytes | b64_len=%d | ~%d tokens",
+                    images_attached,
+                    os.path.basename(img_path),
+                    file_size,
+                    len(base64_image),
+                    img_tokens,
+                )
 
-        messages[0]["content"].append(
-            {
-                "type": "text",
-                "text": f"{prompt}\n\nEvidence content:\n{content}",
-            }
-        )
+        full_text = f"{prompt}\n\nEvidence content:\n{content}"
+        messages[0]["content"].append({"type": "text", "text": full_text})
+
+        prompt_chars = len(prompt)
+        content_chars = len(content)
+        text_tokens_est = self._estimate_token_count(full_text)
+        total_tokens_est = text_tokens_est + total_image_tokens_est
+
+        logger.info("=" * 60)
+        logger.info("LLM EXTRACTION REQUEST SUMMARY")
+        logger.info("-" * 60)
+        logger.info("  Model:            %s", settings.llm_model)
+        logger.info("  Base URL:         %s", settings.openai_base_url or "(default)")
+        logger.info("  Stream:           %s", settings.stream)
+        logger.info("  Max tokens (out): %d", 4096)
+        logger.info("-" * 60)
+        logger.info("  Prompt length:    %d chars", prompt_chars)
+        logger.info("  Content length:   %d chars", content_chars)
+        logger.info("  Text tokens est:  ~%d", text_tokens_est)
+        logger.info("  Images attached:  %d", images_attached)
+        logger.info("  Image bytes:      %d total", total_image_bytes)
+        logger.info("  Image tokens est: ~%d", total_image_tokens_est)
+        logger.info("  TOTAL tokens est: ~%d (input)", total_tokens_est)
+        logger.info("=" * 60)
 
         try:
             if settings.stream:
+                logger.info("Sending streaming LLM request...")
                 stream = self.client.chat.completions.create(
                     model=settings.llm_model,
                     messages=messages,
@@ -116,7 +174,9 @@ class LLMExtractor:
                     if chunk.choices and chunk.choices[0].delta.content:
                         chunks.append(chunk.choices[0].delta.content)
                 result_text = "".join(chunks)
+                logger.info("Streaming response received: %d chars", len(result_text))
             else:
+                logger.info("Sending non-streaming LLM request...")
                 response = self.client.chat.completions.create(
                     model=settings.llm_model,
                     messages=messages,
@@ -124,7 +184,20 @@ class LLMExtractor:
                     response_format={"type": "json_object"},
                 )
                 result_text = response.choices[0].message.content
+                # Log usage if available
+                if hasattr(response, "usage") and response.usage:
+                    logger.info(
+                        "LLM usage — prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                        response.usage.prompt_tokens,
+                        response.usage.completion_tokens,
+                        response.usage.total_tokens,
+                    )
+                logger.info("Response received: %d chars", len(result_text))
+
             parsed = json.loads(result_text)
+            fields_count = len(parsed.get("fields", {}))
+            logger.info("Parsed %d fields from LLM response", fields_count)
+
             normalized_fields = self._normalize_fields(parsed.get("fields", {}))
 
             return ExtractedTrade(
@@ -134,7 +207,22 @@ class LLMExtractor:
                 raw_text=content,
             )
         except Exception as exc:
-            print(f"LLM extraction failed: {exc}")
+            # Log the full error with type for debugging 400s, auth errors, etc.
+            logger.error("=" * 60)
+            logger.error("LLM EXTRACTION FAILED")
+            logger.error("  Error type:  %s", type(exc).__name__)
+            logger.error("  Error:       %s", exc)
+            # If it's an API error, try to log the response body
+            if hasattr(exc, "response"):
+                try:
+                    err_body = exc.response.text if hasattr(exc.response, "text") else str(exc.response)
+                    logger.error("  Response:    %s", err_body[:2000])
+                except Exception:
+                    pass
+            if hasattr(exc, "status_code"):
+                logger.error("  Status code: %s", exc.status_code)
+            logger.error("  Falling back to mock extraction")
+            logger.error("=" * 60)
             return self._mock_extraction(content)
 
     def _build_extraction_prompt(self) -> str:

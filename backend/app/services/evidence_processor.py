@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from pypdf import PdfReader
 
 from app.models import Document
 from . import vision_ocr
+
+logger = logging.getLogger(__name__)
 
 try:
     import extract_msg  # type: ignore
@@ -157,6 +160,35 @@ class EvidenceProcessor:
 
         if not combined_content.strip():
             combined_content = "[MSG evidence: no extractable content]"
+
+        # Log content extraction summary
+        logger.info("=" * 60)
+        logger.info("MSG CONTENT EXTRACTION SUMMARY")
+        logger.info("-" * 60)
+        logger.info("  Subject:          %s", subject or "(empty)")
+        logger.info("  Sender:           %s", sender or "(empty)")
+        logger.info("  Email body:       %d chars", len(body))
+        logger.info("  Attachments:      %d processed", len(attachment_metadata))
+        for att in attachment_metadata:
+            att_name = att.get("attachment_name", "unknown")
+            att_type = att.get("source_type", "unknown")
+            att_text_len = (
+                att.get("pdf_text_length", 0)
+                or att.get("ocr_text_length", 0)
+                or att.get("docx_text_length", 0)
+            )
+            logger.info("    - %s (%s) → %d chars extracted", att_name, att_type, att_text_len)
+        logger.info("  Images found:     %d", len(all_image_paths))
+        for img in all_image_paths:
+            try:
+                img_size = os.path.getsize(img)
+            except OSError:
+                img_size = 0
+            logger.info("    - %s (%d bytes)", os.path.basename(img), img_size)
+        logger.info("  Combined content: %d chars", len(combined_content))
+        if warnings:
+            logger.info("  Warnings:         %s", warnings)
+        logger.info("=" * 60)
 
         return NormalizedEvidence(
             content=combined_content,
