@@ -112,12 +112,13 @@ export function Pipeline() {
     });
   };
 
-  const expandStep = (step: PipelineStepKey) => {
+  const expandStep = (step: PipelineStepKey, scroll: boolean = true) => {
     setExpandedSteps((prev) => new Set(prev).add(step));
-    // Scroll the step card into view
-    setTimeout(() => {
-      stepRefs.current[step]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 100);
+    if (scroll) {
+      setTimeout(() => {
+        stepRefs.current[step]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+    }
   };
 
   const resetPipeline = () => {
@@ -329,9 +330,9 @@ export function Pipeline() {
       return;
     }
 
-    // Step 4: Trade Comparison
+    // Step 4: Trade Comparison (expand but don't scroll — keep focus on entity extraction)
     updateStepStatus('comparison', 'processing');
-    expandStep('comparison');
+    expandStep('comparison', false);
     try {
       const response = await fetch(`${API_BASE}/api/documents/${docId}/validate`, { method: 'POST' });
       if (!response.ok) {
@@ -356,7 +357,7 @@ export function Pipeline() {
     }
 
     // Step 5: Human Review is now available
-    expandStep('review');
+    expandStep('review', false);
     setIsRunning(false);
   };
 
